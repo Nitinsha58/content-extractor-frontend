@@ -1,9 +1,10 @@
-import { Node, mergeAttributes } from '@tiptap/core'
 import { NodeViewWrapper } from '@tiptap/react'
-import { guardedNodeView } from './utils'
+import { createBlockExtension } from './createBlockExtension'
 import { useState } from 'react'
+import { useEditableNode } from './useEditableNode'
 import katex from 'katex'
 import BlockMenu from '../BlockMenu'
+import { BlockAnnotation } from '../LayoutBlocksContext.jsx'
 
 function renderInline(blocks = []) {
   return blocks.map((b, i) => {
@@ -20,8 +21,6 @@ function renderInline(blocks = []) {
 }
 
 function QuestionBlockView({ node, updateAttributes, selected, editor, getPos, deleteNode }) {
-  const [editingStem, setEditingStem] = useState(false)
-  const [stemDraft, setStemDraft] = useState('')
   const [hovered, setHovered] = useState(false)
 
   const number = node.attrs.number
@@ -32,11 +31,15 @@ function QuestionBlockView({ node, updateAttributes, selected, editor, getPos, d
 
   const stemText = stem.map(b => b.type === 'latex' ? (b.display ? `$$${b.value}$$` : `$${b.value}$`) : (b.value ?? '')).join('')
 
-  const commitStem = () => {
-    setEditingStem(false)
-    const newBlocks = parseInlineText(stemDraft)
-    try { updateAttributes({ stem: JSON.stringify(newBlocks) }) } catch { /* editor destroyed during navigation */ }
-  }
+  const { editing: editingStem, setEditing: setEditingStem, draft: stemDraft, setDraft: setStemDraft, commit: commitStem, cancel: cancelStem } = useEditableNode({
+    currentValue: stemText,
+    inputRef: null,
+    alwaysCommit: true,
+    onCommit: (text) => {
+      const blocks = parseInlineText(text)
+      try { updateAttributes({ stem: JSON.stringify(blocks) }) } catch { /* editor destroyed during navigation */ }
+    },
+  })
 
   return (
     <NodeViewWrapper>
@@ -45,6 +48,14 @@ function QuestionBlockView({ node, updateAttributes, selected, editor, getPos, d
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
+        <BlockAnnotation sourceBlockIdsStr={node.attrs.sourceBlockIds} />
+        {hovered && !editingStem && (
+          <BlockMenu
+            editor={editor}
+            getPos={getPos}
+            onDelete={() => deleteNode()}
+          />
+        )}
         <div
           className={`my-4 rounded-lg border px-4 py-3 ${
             selected ? 'border-blue-300 bg-blue-50/30' : 'border-gray-200 bg-gray-50/50'
@@ -57,10 +68,10 @@ function QuestionBlockView({ node, updateAttributes, selected, editor, getPos, d
             {editingStem ? (
               <textarea
                 autoFocus
-                defaultValue={stemText}
+                value={stemDraft}
                 onChange={(e) => setStemDraft(e.target.value)}
                 onBlur={commitStem}
-                onKeyDown={(e) => { if (e.key === 'Escape') setEditingStem(false); e.stopPropagation() }}
+                onKeyDown={(e) => { if (e.key === 'Escape') cancelStem(); e.stopPropagation() }}
                 rows={2}
                 className="flex-1 text-sm border border-blue-300 rounded px-2 py-1 outline-none resize-none bg-white font-mono"
                 spellCheck={false}
@@ -68,7 +79,7 @@ function QuestionBlockView({ node, updateAttributes, selected, editor, getPos, d
             ) : (
               <p
                 className="flex-1 text-sm text-gray-800 leading-relaxed cursor-text"
-                onDoubleClick={() => { setStemDraft(stemText); setEditingStem(true) }}
+                onDoubleClick={() => setEditingStem(true)}
               >
                 {renderInline(stem)}
               </p>
@@ -86,13 +97,6 @@ function QuestionBlockView({ node, updateAttributes, selected, editor, getPos, d
             </div>
           )}
         </div>
-        {hovered && !editingStem && (
-          <BlockMenu
-            editor={editor}
-            getPos={getPos}
-            onDelete={() => deleteNode()}
-          />
-        )}
       </div>
     </NodeViewWrapper>
   )
@@ -118,33 +122,16 @@ function parseInlineText(text) {
   return parts.length ? parts : [{ type: 'text', value: text }]
 }
 
-const QuestionBlock = Node.create({
+const QuestionBlock = createBlockExtension({
   name: 'questionBlock',
-  group: 'block',
-  atom: true,
-
-  addAttributes() {
-    return {
-      nodeId: { default: null },
-      sourceBlockIds: { default: '' },
-      nodeType: { default: 'question', renderHTML: () => ({}) },
-      number: { default: null },
-      stem: { default: '[]' },
-      options: { default: '[]' },
-    }
+  nodeTypeName: 'question',
+  dataAttr: 'data-question-block',
+  extraAttributes: {
+    number: { default: null },
+    stem: { default: '[]' },
+    options: { default: '[]' },
   },
-
-  parseHTML() {
-    return [{ tag: 'div[data-question-block]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['div', mergeAttributes({ 'data-question-block': '' }, HTMLAttributes)]
-  },
-
-  addNodeView() {
-    return guardedNodeView(QuestionBlockView)
-  },
+  ViewComponent: QuestionBlockView,
 })
 
 export default QuestionBlock

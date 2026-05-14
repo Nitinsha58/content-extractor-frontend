@@ -40,7 +40,7 @@ function contentToTipTapParagraph(content = [], attrs = {}) {
   for (const b of content) {
     if (b.type === 'latex' && b.display) {
       flushInline()
-      result.push({ type: 'mathBlock', attrs: { latex: b.value } })
+      result.push({ type: 'mathBlock', attrs: { latex: b.value, ...attrs } })
     } else {
       currentInline.push(b)
     }
@@ -109,6 +109,8 @@ export function structuredToTipTap(structuredContent) {
             message: node.message || '',
           },
         })
+      } else {
+        console.warn('[converters] Unknown node type — skipped:', node.type)
       }
     }
   }
@@ -239,6 +241,8 @@ export function tipTapToStructured(tipTapDoc, originalStructured) {
       }
       if (currentSection) currentSection.children.push(errNode)
       else resultNodes.push(errNode)
+    } else {
+      console.warn('[converters] Unknown TipTap node type — skipped:', n.type)
     }
   }
 

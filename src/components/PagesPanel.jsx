@@ -1,21 +1,17 @@
-import { useRef, useEffect } from 'react'
-
-const STATUS_ICON = {
-  idle: null,
-  queued: '⏳',
-  detecting: null,
-  'layout-detected': '📐',
-  'ocr-complete': '✅',
-  error: '⚠️',
-}
+import { useRef, useEffect, useState } from 'react'
+import {
+  MousePointer2, Type, Heading2, Sigma, Table2, Image,
+  ChevronLeft, ChevronRight,
+  Clock, LayoutTemplate, CheckCircle2, AlertTriangle,
+} from 'lucide-react'
 
 const TOOLS = [
-  { id: 'select', label: 'Select', icon: '➡️', color: 'text-gray-700', bg: 'bg-gray-100' },
-  { id: 'text', label: 'Text', icon: 'T', color: 'text-green-600', bg: 'bg-green-50' },
-  { id: 'title', label: 'Title', icon: 'H', color: 'text-purple-600', bg: 'bg-purple-50' },
-  { id: 'formula', label: 'Formula', icon: 'fx', color: 'text-amber-600', bg: 'bg-amber-50' },
-  { id: 'table', label: 'Table', icon: '≡', color: 'text-blue-600', bg: 'bg-blue-50' },
-  { id: 'figure', label: 'Figure', icon: '🖼', color: 'text-red-600', bg: 'bg-red-50' },
+  { id: 'select',  label: 'Select',  Icon: MousePointer2, color: 'text-gray-700',  bg: 'bg-gray-100',  shortcut: 'Esc'  },
+  { id: 'text',    label: 'Text',    Icon: Type,          color: 'text-green-600', bg: 'bg-green-50',  shortcut: '1/T'  },
+  { id: 'title',   label: 'Title',   Icon: Heading2,      color: 'text-purple-600',bg: 'bg-purple-50', shortcut: '2/H'  },
+  { id: 'formula', label: 'Formula', Icon: Sigma,         color: 'text-amber-600', bg: 'bg-amber-50',  shortcut: '3/F'  },
+  { id: 'table',   label: 'Table',   Icon: Table2,        color: 'text-blue-600',  bg: 'bg-blue-50',   shortcut: '4/B'  },
+  { id: 'figure',  label: 'Figure',  Icon: Image,         color: 'text-red-600',   bg: 'bg-red-50',    shortcut: '5/G'  },
 ]
 
 const LABEL_TO_TOOL = {
@@ -24,6 +20,22 @@ const LABEL_TO_TOOL = {
   isolate_formula: 'formula',
   table: 'table',
   figure: 'figure',
+}
+
+function PageStatusIcon({ status }) {
+  if (status === 'detecting') {
+    return (
+      <span
+        className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"
+        title="Detecting layout…"
+      />
+    )
+  }
+  if (status === 'queued')           return <Clock          size={12} className="text-gray-400"  title="Queued" />
+  if (status === 'layout-detected')  return <LayoutTemplate size={12} className="text-blue-500"  title="Layout detected" />
+  if (status === 'ocr-complete')     return <CheckCircle2   size={12} className="text-green-500" title="OCR complete" />
+  if (status === 'error')            return <AlertTriangle  size={12} className="text-amber-500" title="Error" />
+  return null
 }
 
 export default function PagesPanel({
@@ -35,6 +47,7 @@ export default function PagesPanel({
   selectedBlockLabel,
   onPreloadPages,
 }) {
+  const [collapsed, setCollapsed] = useState(false)
   const effectiveActiveTool = selectedBlockLabel ? LABEL_TO_TOOL[selectedBlockLabel] : activeTool
 
   const scrollContainerRef = useRef(null)
@@ -62,15 +75,57 @@ export default function PagesPanel({
     }, 150)
   }
 
+  if (collapsed) {
+    return (
+      <div className="w-10 bg-white border-r border-gray-200 flex flex-col items-center py-2 gap-2 shrink-0">
+        <button
+          onClick={() => setCollapsed(false)}
+          title="Expand sidebar"
+          className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500"
+        >
+          <ChevronRight size={16} />
+        </button>
+        <div className="w-6 h-px bg-gray-200" />
+        {/* Tool icons — compact */}
+        {TOOLS.map((tool) => {
+          const isActive = effectiveActiveTool === tool.id
+          return (
+            <button
+              key={tool.id}
+              onClick={() => setActiveTool(tool.id)}
+              title={`${tool.label} (${tool.shortcut})`}
+              className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${
+                isActive ? `${tool.color} ${tool.bg}` : 'text-gray-500 hover:bg-gray-100'
+              }`}
+            >
+              <tool.Icon size={16} />
+            </button>
+          )
+        })}
+      </div>
+    )
+  }
+
   return (
-    <div className="w-48 bg-white border-r border-gray-200 flex flex-col">
-      {/* Pages list — acts as the mini-map */}
+    <div className="w-48 bg-white border-r border-gray-200 flex flex-col shrink-0">
+      {/* Header with collapse button */}
+      <div className="flex items-center justify-between px-2 py-2 bg-gray-50 border-b border-gray-200">
+        <span className="text-xs font-semibold text-gray-600">Pages</span>
+        <button
+          onClick={() => setCollapsed(true)}
+          title="Collapse sidebar"
+          className="w-5 h-5 flex items-center justify-center rounded hover:bg-gray-200 text-gray-500"
+        >
+          <ChevronLeft size={16} />
+        </button>
+      </div>
+
+      {/* Pages list */}
       <div
         ref={scrollContainerRef}
         onScroll={handlePanelScroll}
         className="flex-1 overflow-y-auto border-b border-gray-200"
       >
-        <div className="text-xs font-semibold text-gray-600 px-2 py-2 bg-gray-50">Pages</div>
         {pages.map((p, i) => (
           <div
             key={i}
@@ -84,7 +139,6 @@ export default function PagesPanel({
           >
             <span className="text-xs text-gray-500 w-4 shrink-0">{p.pageNo}</span>
 
-            {/* Thumbnail or skeleton */}
             {p.thumbnail ? (
               <img
                 src={p.thumbnail}
@@ -95,18 +149,8 @@ export default function PagesPanel({
               <div className="w-12 h-16 bg-gray-100 border border-gray-200 shrink-0" />
             )}
 
-            {/* Status indicator */}
-            <span className="shrink-0">
-              {p.status === 'detecting' ? (
-                <span
-                  className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"
-                  title="Detecting layout…"
-                />
-              ) : (
-                <span className="text-sm" title={p.status}>
-                  {STATUS_ICON[p.status] ?? ''}
-                </span>
-              )}
+            <span className="shrink-0 flex items-center">
+              <PageStatusIcon status={p.status} />
             </span>
           </div>
         ))}
@@ -134,10 +178,11 @@ export default function PagesPanel({
                     ? `${tool.color} ${tool.bg}`
                     : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
                 }`}
-                title={tool.label}
+                title={`${tool.label} (${tool.shortcut})`}
               >
-                <span className="text-base">{tool.icon}</span>
-                <span className="text-xs">{tool.label}</span>
+                <tool.Icon size={16} />
+                <span className="text-xs flex-1">{tool.label}</span>
+                <span className="text-xs opacity-40 font-mono">{tool.shortcut}</span>
               </button>
             )
           })}

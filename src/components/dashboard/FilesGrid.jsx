@@ -1,4 +1,4 @@
-import { Trash2, FileText, Image, FileQuestion, Star } from 'lucide-react'
+import { Trash2, FileText, Image, FileQuestion, Star, RotateCcw } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
 const STATUS_BADGE = {
@@ -18,14 +18,15 @@ function FileIcon({ filename }) {
   return <FileQuestion size={32} className="text-gray-500" />
 }
 
-export default function FilesGrid({ documents, onDelete, onStar }) {
+export default function FilesGrid({ documents, view, onDelete, onStar, onRestore }) {
   const navigate = useNavigate()
+  const isTrash = view === 'trash'
 
   if (documents.length === 0) {
     return (
       <div className="text-center py-20 text-gray-600">
         <FileText size={40} className="mx-auto mb-3 opacity-30" />
-        <p className="text-sm">No documents here yet</p>
+        <p className="text-sm">{isTrash ? 'Trash is empty' : 'No documents here yet'}</p>
       </div>
     )
   }
@@ -41,10 +42,9 @@ export default function FilesGrid({ documents, onDelete, onStar }) {
         return (
           <div
             key={doc.id}
-            onClick={() => navigate(`/document/${doc.id}`)}
-            className="bg-gray-800 rounded-xl border border-gray-700/60 hover:border-blue-500/60
-                       hover:shadow-lg hover:shadow-blue-900/20 cursor-pointer
-                       flex flex-col transition-all group"
+            onClick={() => !isTrash && navigate(`/document/${doc.id}`)}
+            className={`bg-gray-800 rounded-xl border border-gray-700/60 flex flex-col transition-all group
+                       ${isTrash ? 'opacity-60' : 'hover:border-blue-500/60 hover:shadow-lg hover:shadow-blue-900/20 cursor-pointer'}`}
           >
             {/* Thumbnail */}
             <div className="aspect-4/3 bg-gray-900/60 rounded-t-xl overflow-hidden relative">
@@ -59,32 +59,55 @@ export default function FilesGrid({ documents, onDelete, onStar }) {
                   <FileIcon filename={doc.filename} />
                 </div>
               )}
-              {/* Star indicator */}
-              {doc.is_starred && (
+              {/* Star indicator — not shown in trash */}
+              {!isTrash && doc.is_starred && (
                 <div className="absolute top-1.5 left-1.5">
                   <Star size={12} className="text-yellow-400 fill-yellow-400" />
                 </div>
               )}
               {/* Action buttons on hover */}
               <div className="absolute top-1.5 right-1.5 flex gap-1">
-                <button
-                  onClick={e => { e.stopPropagation(); onStar(doc.id) }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center opacity-0
-                             group-hover:opacity-100 transition-opacity ${
-                               doc.is_starred ? 'bg-yellow-500/80 hover:bg-yellow-400' : 'bg-gray-700/80 hover:bg-gray-600'
-                             }`}
-                  title={doc.is_starred ? 'Unstar' : 'Star'}
-                >
-                  <Star size={10} className={doc.is_starred ? 'text-white fill-white' : 'text-gray-300'} />
-                </button>
-                <button
-                  onClick={e => { e.stopPropagation(); onDelete(doc.id) }}
-                  className="w-6 h-6 bg-red-600/90 text-white rounded-full flex items-center justify-center
-                             opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
-                  title="Delete"
-                >
-                  <Trash2 size={10} />
-                </button>
+                {isTrash ? (
+                  <>
+                    <button
+                      onClick={e => { e.stopPropagation(); onRestore(doc.id) }}
+                      className="w-6 h-6 bg-green-600/90 text-white rounded-full flex items-center justify-center
+                                 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-green-500"
+                      title="Restore"
+                    >
+                      <RotateCcw size={10} />
+                    </button>
+                    <button
+                      onClick={e => { e.stopPropagation(); onDelete(doc.id) }}
+                      className="w-6 h-6 bg-red-600/90 text-white rounded-full flex items-center justify-center
+                                 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
+                      title="Delete permanently"
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={e => { e.stopPropagation(); onStar(doc.id) }}
+                      className={`w-6 h-6 rounded-full flex items-center justify-center opacity-0
+                                 group-hover:opacity-100 transition-opacity ${
+                                   doc.is_starred ? 'bg-yellow-500/80 hover:bg-yellow-400' : 'bg-gray-700/80 hover:bg-gray-600'
+                                 }`}
+                      title={doc.is_starred ? 'Unstar' : 'Star'}
+                    >
+                      <Star size={10} className={doc.is_starred ? 'text-white fill-white' : 'text-gray-300'} />
+                    </button>
+                    <button
+                      onClick={e => { e.stopPropagation(); onDelete(doc.id) }}
+                      className="w-6 h-6 bg-red-600/90 text-white rounded-full flex items-center justify-center
+                                 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
+                      title="Delete"
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 

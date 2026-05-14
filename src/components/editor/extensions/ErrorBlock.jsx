@@ -1,8 +1,8 @@
-import { Node, mergeAttributes } from '@tiptap/core'
 import { NodeViewWrapper } from '@tiptap/react'
-import { guardedNodeView } from './utils'
+import { createBlockExtension } from './createBlockExtension'
 import { useState } from 'react'
 import BlockMenu from '../BlockMenu'
+import { BlockAnnotation } from '../LayoutBlocksContext.jsx'
 
 function ErrorBlockView({ node, editor, getPos, deleteNode }) {
   const [hovered, setHovered] = useState(false)
@@ -15,6 +15,7 @@ function ErrorBlockView({ node, editor, getPos, deleteNode }) {
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
+        <BlockAnnotation sourceBlockIdsStr={node.attrs.sourceBlockIds} />
         <div className="my-3 rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3 flex items-start gap-3">
           <span className="text-amber-400 mt-0.5 shrink-0 text-base">⚠</span>
           <div className="min-w-0">
@@ -38,32 +39,15 @@ function ErrorBlockView({ node, editor, getPos, deleteNode }) {
   )
 }
 
-const ErrorBlock = Node.create({
+const ErrorBlock = createBlockExtension({
   name: 'errorBlock',
-  group: 'block',
-  atom: true,
-
-  addAttributes() {
-    return {
-      nodeId: { default: null },
-      sourceBlockIds: { default: '' },
-      nodeType: { default: 'error', renderHTML: () => ({}) },
-      label: { default: '' },
-      message: { default: '' },
-    }
+  nodeTypeName: 'error',
+  dataAttr: 'data-error-block',
+  extraAttributes: {
+    label: { default: '' },
+    message: { default: '' },
   },
-
-  parseHTML() {
-    return [{ tag: 'div[data-error-block]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['div', mergeAttributes({ 'data-error-block': '' }, HTMLAttributes)]
-  },
-
-  addNodeView() {
-    return guardedNodeView(ErrorBlockView)
-  },
+  ViewComponent: ErrorBlockView,
 })
 
 export default ErrorBlock

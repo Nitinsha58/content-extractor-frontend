@@ -69,6 +69,8 @@
   width: 100%;
   margin: 1rem 0;
   font-size: 0.9em;
+  /* fixed layout prevents column-width recalculation on every cell focus/edit */
+  table-layout: fixed;
 }
 
 .tiptap-doc th,
@@ -76,6 +78,11 @@
   border: 1px solid #d1d5db;
   padding: 0.5rem 0.75rem;
   text-align: left;
+  /* relative required for .selectedCell::after overlay */
+  position: relative;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  min-width: 2em;
 }
 
 .tiptap-doc th {
@@ -85,6 +92,21 @@
 
 .tiptap-doc tr:nth-child(even) td {
   background: #fafafa;
+}
+
+/* TipTap cell-selection highlight */
+.tiptap-doc .selectedCell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(59, 130, 246, 0.12);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Hide column resize handles (we use resizable: false) */
+.tiptap-doc .column-resize-handle {
+  display: none;
 }
 
 /* Highlighted node from canvas click */

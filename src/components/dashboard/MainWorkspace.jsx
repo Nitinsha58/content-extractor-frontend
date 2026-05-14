@@ -130,7 +130,7 @@ export default function MainWorkspace({
         )}
 
         {viewMode === 'grid' ? (
-          <FilesGrid documents={sorted} onDelete={onDelete} onStar={onStar} />
+          <FilesGrid documents={sorted} view={view} onDelete={onDelete} onStar={onStar} onRestore={onRestore} />
         ) : (
           <FilesTable
             documents={sorted}

@@ -1,8 +1,8 @@
-import { Node, mergeAttributes } from '@tiptap/core'
 import { NodeViewWrapper } from '@tiptap/react'
-import { guardedNodeView } from './utils'
+import { createBlockExtension } from './createBlockExtension'
 import { useRef, useState } from 'react'
 import BlockMenu from '../BlockMenu'
+import { BlockAnnotation } from '../LayoutBlocksContext.jsx'
 
 function ImagePlaceholderView({ node, updateAttributes, selected, editor, getPos, deleteNode }) {
   const [editingAlt, setEditingAlt] = useState(false)
@@ -24,6 +24,7 @@ function ImagePlaceholderView({ node, updateAttributes, selected, editor, getPos
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
+        <BlockAnnotation sourceBlockIdsStr={node.attrs.sourceBlockIds} />
         <div
           className={`my-4 rounded-lg border transition-colors ${
             selected ? 'border-blue-300' : 'border-transparent'
@@ -73,32 +74,15 @@ function ImagePlaceholderView({ node, updateAttributes, selected, editor, getPos
   )
 }
 
-const ImagePlaceholder = Node.create({
+const ImagePlaceholder = createBlockExtension({
   name: 'imagePlaceholder',
-  group: 'block',
-  atom: true,
-
-  addAttributes() {
-    return {
-      nodeId: { default: null },
-      sourceBlockIds: { default: '' },
-      nodeType: { default: 'image', renderHTML: () => ({}) },
-      url: { default: '' },
-      alt: { default: '' },
-    }
+  nodeTypeName: 'image',
+  dataAttr: 'data-image-placeholder',
+  extraAttributes: {
+    url: { default: '' },
+    alt: { default: '' },
   },
-
-  parseHTML() {
-    return [{ tag: 'div[data-image-placeholder]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['div', mergeAttributes({ 'data-image-placeholder': '' }, HTMLAttributes)]
-  },
-
-  addNodeView() {
-    return guardedNodeView(ImagePlaceholderView)
-  },
+  ViewComponent: ImagePlaceholderView,
 })
 
 export default ImagePlaceholder

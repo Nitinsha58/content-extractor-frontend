@@ -1,44 +1,31 @@
-import { Node, mergeAttributes } from '@tiptap/core'
 import { NodeViewWrapper } from '@tiptap/react'
-import { guardedNodeView } from './utils'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { createBlockExtension } from './createBlockExtension'
+import { useState } from 'react'
 import katex from 'katex'
 import BlockMenu from '../BlockMenu'
+import MathPopup from '../MathPopup'
+import { BlockAnnotation } from '../LayoutBlocksContext.jsx'
 
 function MathBlockView({ node, updateAttributes, selected, editor, getPos, deleteNode }) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(node.attrs.latex)
   const [hovered, setHovered] = useState(false)
-  const textareaRef = useRef(null)
+  const [popupAnchor, setPopupAnchor] = useState(null)
 
-  useEffect(() => { setDraft(node.attrs.latex) }, [node.attrs.latex])
+  const openPopup = (e) => setPopupAnchor(e.currentTarget.getBoundingClientRect())
 
-  useEffect(() => {
-    if (editing && textareaRef.current) {
-      textareaRef.current.focus()
-      textareaRef.current.select()
-    }
-  }, [editing])
-
-  const commit = useCallback(() => {
-    setEditing(false)
-    const trimmed = draft.trim()
-    if (trimmed && trimmed !== node.attrs.latex) {
-      try { updateAttributes({ latex: trimmed }) } catch { /* editor destroyed during navigation */ }
-    } else {
-      setDraft(node.attrs.latex)
-    }
-  }, [draft, node.attrs.latex, updateAttributes])
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Escape') { setDraft(node.attrs.latex); setEditing(false) }
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commit() }
-    e.stopPropagation()
+  const handleCommit = (latex) => {
+    setPopupAnchor(null)
+    if (latex !== node.attrs.latex) updateAttributes({ latex })
   }
 
   let previewHtml
-  try { previewHtml = katex.renderToString(draft || node.attrs.latex, { displayMode: true, throwOnError: false }) }
-  catch { previewHtml = `<code>$$${draft}$$</code>` }
+  try {
+    previewHtml = katex.renderToString(node.attrs.latex || '\\square', {
+      displayMode: true,
+      throwOnError: false,
+    })
+  } catch {
+    previewHtml = `<code>$$${node.attrs.latex}$$</code>`
+  }
 
   return (
     <NodeViewWrapper>
@@ -47,45 +34,36 @@ function MathBlockView({ node, updateAttributes, selected, editor, getPos, delet
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
-        <div
-          className={`rounded-lg border transition-colors ${
-            selected || editing
-              ? 'border-blue-300 bg-blue-50'
-              : 'border-transparent hover:border-gray-200 hover:bg-gray-50'
-          }`}
-        >
-          {editing ? (
-            <div className="p-3">
-              <textarea
-                ref={textareaRef}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onBlur={commit}
-                onKeyDown={handleKeyDown}
-                rows={3}
-                className="w-full bg-white border border-blue-300 rounded px-2 py-1 text-sm font-mono outline-none resize-none"
-                spellCheck={false}
-                placeholder="LaTeX formula…"
-              />
-              <div
-                className="mt-2 text-center pointer-events-none"
-                dangerouslySetInnerHTML={{ __html: previewHtml }}
-              />
-              <p className="text-xs text-gray-400 text-right mt-1">Ctrl+Enter to confirm · Esc to cancel</p>
-            </div>
-          ) : (
-            <div
-              className="py-2 text-center cursor-pointer"
-              onClick={() => setEditing(true)}
-              dangerouslySetInnerHTML={{ __html: previewHtml }}
-            />
-          )}
-        </div>
-        {hovered && !editing && (
+        <BlockAnnotation sourceBlockIdsStr={node.attrs.sourceBlockIds} />
+        {hovered && !popupAnchor && (
           <BlockMenu
             editor={editor}
             getPos={getPos}
             onDelete={() => deleteNode()}
+          />
+        )}
+        <div
+          className={`rounded-lg border transition-colors ${
+            selected || popupAnchor
+              ? 'border-blue-300 bg-blue-50'
+              : 'border-transparent hover:border-gray-200 hover:bg-gray-50'
+          }`}
+        >
+          <div
+            className="py-3 text-center cursor-pointer select-none"
+            onClick={openPopup}
+            title="Click to edit formula"
+            dangerouslySetInnerHTML={{ __html: previewHtml }}
+          />
+        </div>
+
+        {popupAnchor && (
+          <MathPopup
+            anchorRect={popupAnchor}
+            initialLatex={node.attrs.latex}
+            displayMode={true}
+            onCommit={handleCommit}
+            onCancel={() => setPopupAnchor(null)}
           />
         )}
       </div>
@@ -93,26 +71,12 @@ function MathBlockView({ node, updateAttributes, selected, editor, getPos, delet
   )
 }
 
-const MathBlock = Node.create({
+const MathBlock = createBlockExtension({
   name: 'mathBlock',
-  group: 'block',
-  atom: true,
-
-  addAttributes() {
-    return { latex: { default: '' } }
-  },
-
-  parseHTML() {
-    return [{ tag: 'div[data-math-block]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['div', mergeAttributes({ 'data-math-block': '' }, HTMLAttributes)]
-  },
-
-  addNodeView() {
-    return guardedNodeView(MathBlockView)
-  },
+  nodeTypeName: 'paragraph',
+  dataAttr: 'data-math-block',
+  extraAttributes: { latex: { default: '' } },
+  ViewComponent: MathBlockView,
 })
 
 export default MathBlock

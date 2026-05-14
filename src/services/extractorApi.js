@@ -14,6 +14,32 @@ export async function detectLayout(imageBlob, filename = 'page.png') {
   return r.json()
 }
 
+export async function analyzeCellTypes(sessionId, blockId, bbox, tableStructure) {
+  const r = await fetch(`${BASE}/api/debug/table-cell-types/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, block_id: blockId, bbox, table_structure: tableStructure }),
+  })
+  if (!r.ok) {
+    const text = await r.text()
+    throw new Error(`CellTypes ${r.status}: ${text}`)
+  }
+  return r.json()
+}
+
+export async function analyzeTableStructure(sessionId, blockId, bbox) {
+  const r = await fetch(`${BASE}/api/debug/table-structure/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, block_id: blockId, bbox }),
+  })
+  if (!r.ok) {
+    const text = await r.text()
+    throw new Error(`TableStructure ${r.status}: ${text}`)
+  }
+  return r.json()
+}
+
 export async function runOcr(sessionId, layoutBlocks) {
   const r = await fetch(`${BASE}/api/debug/ocr/`, {
     method: 'POST',

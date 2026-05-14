@@ -34,7 +34,7 @@ export default function BlockMenu({ editor, getPos, onDelete, convertLabel, onCo
   return (
     <div
       contentEditable={false}
-      className="absolute right-1 top-1 flex items-center gap-0.5 bg-white border border-gray-200 rounded-md shadow-sm px-1 py-0.5 z-20 select-none"
+      className="absolute right-0 bottom-full -mb-px flex items-center gap-0.5 bg-white border border-gray-200 rounded-md shadow-sm px-1 py-0.5 z-20 select-none"
       onMouseDown={stop}
     >
       <Btn onClick={() => moveBlock(editor, getPos, 'up')} title="Move up">↑</Btn>

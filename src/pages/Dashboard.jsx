@@ -236,7 +236,7 @@ export default function Dashboard() {
   const handleFolderNavigate = useCallback((id) => {
     setCurrentFolderId(id)
     setCurrentTagId(null)
-    setView('all')
+    if (id !== null) setView('all')
     setSearchQuery('')
   }, [])
 

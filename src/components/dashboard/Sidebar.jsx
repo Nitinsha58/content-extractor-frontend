@@ -40,7 +40,7 @@ export default function Sidebar({
           {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
             <li key={id}>
               <button
-                onClick={() => { onViewChange(id); onFolderSelect(null); onTagSelect(null) }}
+                onClick={() => onViewChange(id)}
                 className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
                   view === id && !selectedFolderId && !selectedTagId
                     ? 'bg-blue-600 text-white'

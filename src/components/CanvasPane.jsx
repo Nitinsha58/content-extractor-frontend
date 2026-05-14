@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { sessionImageUrl } from '../services/extractorApi'
+import { sessionImageUrl } from '../services/DocumentRepository'
 import BlockOverlay from './BlockOverlay'
+import { AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
 
 const DEFAULT_SCALE = 1.5
 const NEAR_VIEWPORT_MARGIN = '600px'
@@ -25,6 +26,10 @@ function PdfPageView({
   onSelectBlocks,
   onBlocksChange,
   registerPageEl,
+  tatrRunningBlockIds,
+  finalizingBlockIds,
+  onFinalizeBlock,
+  onCellSelect,
 }) {
   const wrapperRef = useRef(null)
   const pdfCanvasRef = useRef(null)
@@ -213,7 +218,7 @@ function PdfPageView({
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           padding: 16, textAlign: 'center', fontSize: 12, color: '#991b1b',
         }}>
-          ⚠️ {renderError}
+          <AlertTriangle size={14} className="shrink-0" /> {renderError}
         </div>
       )}
 
@@ -232,6 +237,10 @@ function PdfPageView({
           onSelectBlock={onSelectBlock}
           onSelectBlocks={onSelectBlocks}
           onBlocksChange={(newBlocks) => onBlocksChange(pageIdx, newBlocks)}
+          tatrRunningBlockIds={tatrRunningBlockIds}
+          finalizingBlockIds={finalizingBlockIds}
+          onFinalizeBlock={onFinalizeBlock}
+          onCellSelect={onCellSelect}
         />
       )}
     </div>
@@ -252,6 +261,10 @@ export default function CanvasPane({
   onActivePageChange,
   activeTool,
   viewMode,
+  tatrRunningBlockIds,
+  finalizingBlockIds,
+  onFinalizeBlock,
+  onCellSelect,
 }) {
   const scrollRef = useRef(null)
   const pageElsRef = useRef(new Map())
@@ -381,7 +394,7 @@ export default function CanvasPane({
           ) : (
             <>
               <p className="text-lg font-semibold">No document loaded</p>
-              <p className="text-sm">Click "📂 Open File" to load a PDF or image</p>
+              <p className="text-sm">Click "Open File" to load a PDF or image</p>
             </>
           )}
         </div>
@@ -424,6 +437,10 @@ export default function CanvasPane({
               onSelectBlocks={onSelectBlocks}
               onBlocksChange={onBlocksChange}
               registerPageEl={registerPageEl}
+              tatrRunningBlockIds={tatrRunningBlockIds}
+              finalizingBlockIds={finalizingBlockIds}
+              onFinalizeBlock={onFinalizeBlock}
+              onCellSelect={onCellSelect}
             />
           ))}
 
@@ -504,7 +521,7 @@ export default function CanvasPane({
             cursor: activePage === 0 ? 'default' : 'pointer',
             opacity: activePage === 0 ? 0.4 : 1,
           }}
-        >‹</button>
+        ><ChevronLeft size={14} /></button>
         <button
           disabled={activePage >= pages.length - 1}
           onClick={() => onActivePageChange?.(activePage + 1)}
@@ -514,7 +531,7 @@ export default function CanvasPane({
             cursor: activePage >= pages.length - 1 ? 'default' : 'pointer',
             opacity: activePage >= pages.length - 1 ? 0.4 : 1,
           }}
-        >›</button>
+        ><ChevronRight size={14} /></button>
       </div>
     </div>
   )

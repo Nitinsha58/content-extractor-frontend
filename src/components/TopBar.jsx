@@ -1,3 +1,7 @@
+import { ArrowLeft, FolderOpen, Scan, RotateCcw, Undo2, Redo2, FileText, Layers, Columns2 } from 'lucide-react'
+
+const VIEW_ICONS = { original: FileText, overlay: Layers, split: Columns2 }
+
 export default function TopBar({
   filename,
   pagesDone,
@@ -31,13 +35,13 @@ export default function TopBar({
         {onNavigateToDashboard && (
           <button
             onClick={onNavigateToDashboard}
-            className="px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 shrink-0"
+            className="flex items-center gap-1.5 px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 shrink-0"
           >
-            ← Dashboard
+            <ArrowLeft size={16} /> Dashboard
           </button>
         )}
-        <label className="px-3 py-1 bg-blue-600 rounded cursor-pointer hover:bg-blue-700 font-medium shrink-0">
-          📂 Open File
+        <label className="flex items-center gap-1.5 px-3 py-1 bg-blue-600 rounded cursor-pointer hover:bg-blue-700 font-medium shrink-0">
+          <FolderOpen size={16} /> Open File
           <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.webp" className="hidden" onChange={onFileChange} />
         </label>
 
@@ -70,26 +74,26 @@ export default function TopBar({
         <button
           onClick={onRecognize}
           disabled={!filename || isProcessing || isLoading}
-          className="px-4 py-1 bg-green-600 rounded font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          className="flex items-center gap-1.5 px-4 py-1 bg-green-600 rounded font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
         >
-          🔍 Detect Layout
+          <Scan size={16} /> Detect Layout
         </button>
 
         <button
           onClick={onRerunOcr}
           disabled={!filename || isProcessing}
-          className="px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          className="flex items-center gap-1.5 px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
         >
-          ↺ Run OCR
+          <RotateCcw size={16} /> Run OCR
         </button>
 
         {selectedBlockCount > 0 && (
           <button
             onClick={onRunOcrSelected}
             disabled={isProcessing}
-            className="px-3 py-1 bg-amber-600 rounded hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            className="flex items-center gap-1.5 px-3 py-1 bg-amber-600 rounded hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
           >
-            ↺ OCR Selected ({selectedBlockCount})
+            <RotateCcw size={16} /> OCR Selected ({selectedBlockCount})
           </button>
         )}
 
@@ -98,33 +102,38 @@ export default function TopBar({
         <button
           onClick={onUndo}
           disabled={!canUndo || isProcessing}
-          className="px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          className="flex items-center gap-1.5 px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
         >
-          ↶ Undo
+          <Undo2 size={16} /> Undo
         </button>
 
         <button
           onClick={onRedo}
           disabled={!canRedo || isProcessing}
-          className="px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          className="flex items-center gap-1.5 px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
         >
-          ↷ Redo
+          <Redo2 size={16} /> Redo
         </button>
 
         <div className="w-px h-6 bg-gray-700 shrink-0" />
 
         <div className="flex rounded overflow-hidden border border-gray-600 shrink-0">
-          {['original', 'overlay', 'split'].map((mode) => (
-            <button
-              key={mode}
-              onClick={() => setViewMode(mode)}
-              className={`px-3 py-1 text-xs font-medium transition-colors ${
-                viewMode === mode ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              {mode === 'original' ? '📄' : mode === 'overlay' ? '🎯' : '↔️'} {mode}
-            </button>
-          ))}
+          {['original', 'overlay', 'split'].map((mode) => {
+            const Icon = VIEW_ICONS[mode]
+            return (
+              <button
+                key={mode}
+                onClick={() => setViewMode(mode)}
+                title={mode === 'split' ? 'Show layout editor + content editor side by side' : undefined}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium transition-colors ${
+                  viewMode === mode ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+              >
+                <Icon size={16} />
+                {mode === 'split' ? 'split' : mode}
+              </button>
+            )
+          })}
         </div>
 
         <div className="ml-auto flex gap-2 shrink-0">

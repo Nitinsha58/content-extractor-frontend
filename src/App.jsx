@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
+import { usePageWindow } from './usePageWindow'
 import pdfjsLib from './pdf/pdfConfig'
-import { detectLayout, runOcr, exportDocument, createDocument, updateDocument, savePage, getPage, getDocument } from './services/extractorApi'
+import { runLayoutDetection, runTableStructureAnalysis, runTableCellTypeDetection, runOcr, exportDocument, createDocument, updateDocument, savePageContent, getPage, getDocument } from './services/DocumentRepository'
+import { computeReadingOrder } from './utils/readingOrder'
 import TopBar from './components/TopBar'
 import PagesPanel from './components/PagesPanel'
 import CanvasPane from './components/CanvasPane'
@@ -8,8 +10,6 @@ import DocumentEditor from './components/DocumentEditor'
 
 const INITIAL_BATCH = 8    // pages shown before background PDF loading begins
 const DETECTION_WINDOW = 6 // pages ahead of active page to keep auto-detected
-const RENDER_WINDOW  = 8   // pages loaded on each side of activePage (must be >= DETECTION_WINDOW)
-const UNLOAD_BUFFER  = 15  // pages kept in memory beyond RENDER_WINDOW before unloading
 
 // ── Structured content patch helpers ──────────────────────────────────────────
 // Used by handleRunOcrSelected to update only affected document nodes in-place,
@@ -17,11 +17,12 @@ const UNLOAD_BUFFER  = 15  // pages kept in memory beyond RENDER_WINDOW before u
 
 function _inlineContent(blocks) {
   return (blocks || [])
-    .filter(b => b.type === 'text' || b.type === 'latex')
-    .map(b => b.type === 'latex'
-      ? { type: 'latex', value: b.value, display: b.display ?? false }
-      : { type: 'text', value: b.value }
-    )
+    .filter(b => b.type === 'text' || b.type === 'latex' || b.type === 'image')
+    .map(b => {
+      if (b.type === 'latex') return { type: 'latex', value: b.value, display: b.display ?? false }
+      if (b.type === 'image') return { type: 'image', url: b.url, alt: b.alt || '' }
+      return { type: 'text', value: b.value }
+    })
 }
 
 function _patchNode(node, newBlocksById) {
@@ -89,22 +90,6 @@ function patchStructuredContent(structuredContent, newBlocksById) {
   return { ...structuredContent, nodes: walk(structuredContent.nodes) }
 }
 
-function computeReadingOrder(blocks, imageW) {
-  if (!blocks?.length) return blocks || []
-  const w = imageW || 0
-  const enriched = blocks.map(b => {
-    const blockW = b.bbox[2] - b.bbox[0]
-    const centerX = (b.bbox[0] + b.bbox[2]) / 2
-    const isFullWidth = w > 0 && blockW > w * 0.7
-    const column_idx = isFullWidth || w === 0 ? 0 : (centerX > w / 2 ? 1 : 0)
-    return { ...b, column_idx }
-  })
-  enriched.sort((a, b) => {
-    if (a.column_idx !== b.column_idx) return a.column_idx - b.column_idx
-    return a.bbox[1] - b.bbox[1]
-  })
-  return enriched.map((b, i) => ({ ...b, reading_order: i }))
-}
 
 async function generateThumbnail(pdfPage) {
   const viewport = pdfPage.getViewport({ scale: 0.5 })
@@ -140,8 +125,10 @@ function makePage(i, pdfPage, thumbnail, hintW = 0, hintH = 0) {
 export default function App({ docId, freshUpload = false, initialPdfFile = null, onNavigateToDashboard }) {
   const [pdfFile, setPdfFile] = useState(null)
   const [pdfDoc, setPdfDoc] = useState(null)
-  const [pages, setPages] = useState([])
   const [activePage, setActivePage] = useState(0)
+  const [splitRatio, setSplitRatio] = useState(0.5) // fraction of width given to CanvasPane in split mode
+  const splitContainerRef = useRef(null)
+  const isDraggingSplitRef = useRef(false)
   const [selectedBlockId, setSelectedBlockId] = useState(null)
   const [selectedBlockIds, setSelectedBlockIds] = useState([])
   const [activeTool, setActiveTool] = useState('select')
@@ -150,8 +137,15 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
   const [redoStack, setRedoStack] = useState([])
   const [isProcessing, setIsProcessing] = useState(false)
   const [ocrVersion, setOcrVersion] = useState(0)
+  const [tatrRunningBlockIds, setTatrRunningBlockIds] = useState(() => new Set())
+  const [finalizingBlockIds, setFinalizingBlockIds] = useState(() => new Set())
+  // { blockId, row, col } — selected cell within a finalized table block
+  const [selectedCell, setSelectedCell] = useState(null)
   const [pdfLoadProgress, setPdfLoadProgress] = useState(null)
   const [structuredContent, setStructuredContent] = useState(null)
+
+  // ── Page window hook ───────────────────────────────────────────────────────
+  const { pages, pagesRef, setPages, loadPagesInRange, loadGenRef } = usePageWindow({ pdfDoc, activePage })
 
   // ── Persistence ref ────────────────────────────────────────────────────────
   const documentIdRef = useRef(docId || null)
@@ -160,57 +154,13 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
   const documentEditorRef = useRef(null)
   const structuredContentRef = useRef(null)
 
-  // ── PDF lazy-loading refs ──────────────────────────────────────────────────
-  const loadGenRef = useRef(0)
-  const pdfDocRef  = useRef(null)   // mirrors pdfDoc state for async closures
-
   // ── Auto-detection refs ────────────────────────────────────────────────────
-  const pagesRef = useRef([])                   // mirror of pages state for async closures
   const detectionQueueRef = useRef([])          // page indices waiting to be detected
   const isDetectionRunningRef = useRef(false)   // one worker at a time
   const detectionGenRef = useRef(0)             // incremented on file open to abort worker
   const autoDetectInitiatedRef = useRef(false)  // auto-start fires only once per file
   const blocksSaveTimerRef = useRef({})         // per-page debounce timers for block saves
-
-  // Keep pagesRef in sync so async workers always see latest page state.
-  useEffect(() => { pagesRef.current = pages }, [pages])
-
-  // Keep pdfDocRef in sync for use in async callbacks.
-  useEffect(() => { pdfDocRef.current = pdfDoc }, [pdfDoc])
-
-  // ── On-demand page loader ──────────────────────────────────────────────────
-  // Loads pdfPage objects for pages in [startIdx, endIdx] that don't have one yet.
-  // Called by the window management effect and by PagesPanel scroll pre-loading.
-  const loadPagesInRange = useCallback(async (startIdx, endIdx) => {
-    const doc = pdfDocRef.current
-    if (!doc) return  // image files have no pdfDoc
-    const gen = loadGenRef.current
-    const clampedStart = Math.max(0, startIdx)
-    const clampedEnd   = Math.min(pagesRef.current.length - 1, endIdx)
-
-    for (let idx = clampedStart; idx <= clampedEnd; idx++) {
-      if (loadGenRef.current !== gen) return  // new file opened — abort
-      const p = pagesRef.current[idx]
-      if (!p || p.pdfPage) continue           // already loaded
-      try {
-        const pdfPage = await doc.getPage(p.pageNo)
-        if (loadGenRef.current !== gen) return
-        setPages(prev => {
-          const u = [...prev]
-          if (u[idx] && !u[idx].pdfPage) u[idx] = { ...u[idx], pdfPage }
-          return u
-        })
-        // Eagerly mirror into pagesRef so the detection worker sees it immediately.
-        const eager = [...pagesRef.current]
-        if (eager[idx] && !eager[idx].pdfPage) {
-          eager[idx] = { ...eager[idx], pdfPage }
-          pagesRef.current = eager
-        }
-      } catch (err) {
-        console.warn(`loadPagesInRange page ${idx + 1}:`, err.message)
-      }
-    }
-  }, []) // stable — only uses refs
+  const tatrRetriggerTimerRef = useRef({})      // per-block debounce timers for TATR re-runs after bbox resize
 
   // ── Detection worker ───────────────────────────────────────────────────────
   const runDetectionWorker = useCallback(async () => {
@@ -251,6 +201,17 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
               }
               return u
             })
+            // Re-trigger TATR for any table blocks missing structure (e.g. prior
+            // save failed or document was opened before TATR completed).
+            if (saved.session_id) {
+              const needsStructure = saved.layout_blocks.filter(
+                b => b.label === 'table' && !b.table_structure
+              )
+              if (needsStructure.length > 0) {
+                triggerTatrForTableBlocks(idx, saved.session_id, saved.layout_blocks)
+                  .catch(e => console.warn('TATR re-trigger (restore) failed:', e.message))
+              }
+            }
             continue
           }
         } catch (e) {
@@ -276,7 +237,7 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
 
         if (detectionGenRef.current !== gen) break
 
-        const result = await detectLayout(imageBlob, `page-${page.pageNo}.png`)
+        const result = await runLayoutDetection(imageBlob, `page-${page.pageNo}.png`)
 
         if (detectionGenRef.current !== gen) break
 
@@ -298,7 +259,7 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
         })
 
         if (documentIdRef.current) {
-          savePage(documentIdRef.current, page.pageNo, {
+          savePageContent(documentIdRef.current, page.pageNo, {
             session_id: result.session_id,
             image_w: result.image_width,
             image_h: result.image_height,
@@ -306,6 +267,10 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
             status: 'layout-detected',
           }).catch(e => console.warn('layout save failed:', e.message))
         }
+
+        // Fire TATR for any table blocks — non-blocking, updates state when done
+        triggerTatrForTableBlocks(idx, result.session_id, orderedBlocks)
+          .catch(e => console.warn('TATR trigger failed:', e.message))
       } catch (err) {
         console.warn(`Auto-detect page ${idx + 1}:`, err.message)
         setPages(prev => {
@@ -318,6 +283,122 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
 
     isDetectionRunningRef.current = false
   }, []) // stable — only uses refs and setPages
+
+  // ── TATR auto-trigger — fires after layout detection for each table block ──
+  // Stable callback ([] deps) — only uses refs and setPages.
+  const triggerTatrForTableBlocks = useCallback(async (pageIdx, sessionId, blocks) => {
+    const tableBlocks = blocks.filter(b => b.label === 'table' && !b.table_structure)
+    if (tableBlocks.length === 0) return
+
+    // Mark these blocks as TATR-pending so BlockOverlay can show a spinner
+    const pendingIds = tableBlocks.map(b => b.id)
+    setTatrRunningBlockIds(prev => new Set([...prev, ...pendingIds]))
+
+    const settled = await Promise.allSettled(
+      tableBlocks.map(async (block) => {
+        const result = await runTableStructureAnalysis(sessionId, block.id, block.bbox)
+        return { blockId: block.id, table_structure: result.table_structure }
+      })
+    )
+
+    const successMap = {}
+    for (const r of settled) {
+      if (r.status === 'fulfilled' && r.value?.table_structure) {
+        successMap[r.value.blockId] = r.value.table_structure
+      } else if (r.status === 'rejected') {
+        console.warn('TATR failed for block:', r.reason?.message)
+      }
+    }
+
+    // Clear pending state for all blocks we attempted (success or failure)
+    setTatrRunningBlockIds(prev => {
+      const next = new Set(prev)
+      pendingIds.forEach(id => next.delete(id))
+      return next
+    })
+
+    if (Object.keys(successMap).length === 0) return
+
+    setPages(prev => {
+      const u = [...prev]
+      if (!u[pageIdx]) return prev
+      u[pageIdx] = {
+        ...u[pageIdx],
+        layoutBlocks: u[pageIdx].layoutBlocks.map(b =>
+          successMap[b.id] ? { ...b, table_structure: successMap[b.id] } : b
+        ),
+      }
+      return u
+    })
+
+    if (documentIdRef.current) {
+      const docId = documentIdRef.current
+      // Use the current page state (pagesRef is one render behind setPages, so wait a
+      // tick — this also prevents the save from racing with in-flight block edits).
+      setTimeout(() => {
+        const currentPage = pagesRef.current[pageIdx]
+        if (!currentPage) return
+        // Apply table_structure onto whatever blocks are current (preserves user edits).
+        const toSave = currentPage.layoutBlocks.map(b =>
+          successMap[b.id] ? { ...b, table_structure: successMap[b.id] } : b
+        )
+        savePageContent(docId, currentPage.pageNo, {
+          layout_blocks: toSave,
+        }).catch(e => console.warn('tatr save failed:', e.message))
+      }, 0)
+    }
+  }, []) // stable — only uses refs and setPages
+
+  // ── Finalize table block — lock structure + run per-cell YOLO ─────────────
+  const handleFinalizeBlock = useCallback(async (blockId) => {
+    const page = pagesRef.current[activePage]
+    if (!page) return
+    const block = page.layoutBlocks.find(b => b.id === blockId)
+    if (!block?.table_structure) return
+
+    setFinalizingBlockIds(prev => new Set([...prev, blockId]))
+
+    try {
+      const result = await runTableCellTypeDetection(page.sessionId, blockId, block.bbox, block.table_structure)
+      const cellTypes = result.cell_types
+
+      setPages(prev => {
+        const u = [...prev]
+        if (!u[activePage]) return prev
+        u[activePage] = {
+          ...u[activePage],
+          layoutBlocks: u[activePage].layoutBlocks.map(b =>
+            b.id === blockId
+              ? { ...b, table_structure: { ...b.table_structure, cell_types: cellTypes, finalized: true } }
+              : b
+          ),
+        }
+        return u
+      })
+
+      if (documentIdRef.current) {
+        setTimeout(() => {
+          const currentPage = pagesRef.current[activePage]
+          if (!currentPage) return
+          savePageContent(documentIdRef.current, currentPage.pageNo, {
+            layout_blocks: currentPage.layoutBlocks.map(b =>
+              b.id === blockId
+                ? { ...b, table_structure: { ...b.table_structure, cell_types: cellTypes, finalized: true } }
+                : b
+            ),
+          }).catch(e => console.warn('finalize save failed:', e.message))
+        }, 0)
+      }
+    } catch (err) {
+      console.warn('Finalize failed:', err.message)
+    } finally {
+      setFinalizingBlockIds(prev => {
+        const next = new Set(prev)
+        next.delete(blockId)
+        return next
+      })
+    }
+  }, [activePage]) // stable — only uses refs and setPages/setFinalizingBlockIds
 
   // ── Queue helper ───────────────────────────────────────────────────────────
   const enqueueDetection = useCallback((indices) => {
@@ -367,42 +448,6 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
       Array.from({ length: end - activePage + 1 }, (_, i) => activePage + i)
     )
   }, [activePage, pages.length, enqueueDetection])
-
-  // ── Virtual render window: load/unload pdfPage objects around activePage ───
-  // Keeps only RENDER_WINDOW pages loaded on each side; unloads beyond UNLOAD_BUFFER.
-  // Image files (no pdfDoc) are skipped entirely.
-  useEffect(() => {
-    if (!pdfDoc) return
-
-    const unloadStart = activePage - UNLOAD_BUFFER
-    const unloadEnd   = activePage + UNLOAD_BUFFER
-
-    // 1. Unload pdfPage for pages far outside the buffer (frees memory first).
-    setPages(prev => {
-      let changed = false
-      const u = prev.map((p, idx) => {
-        if (p.pdfPage && (idx < unloadStart || idx > unloadEnd)) {
-          changed = true
-          return { ...p, pdfPage: null }
-        }
-        return p
-      })
-      return changed ? u : prev
-    })
-    // Mirror unloads into pagesRef immediately so the detection worker sees them.
-    const eager = [...pagesRef.current]
-    let eagerChanged = false
-    for (let idx = 0; idx < eager.length; idx++) {
-      if (eager[idx]?.pdfPage && (idx < unloadStart || idx > unloadEnd)) {
-        eager[idx] = { ...eager[idx], pdfPage: null }
-        eagerChanged = true
-      }
-    }
-    if (eagerChanged) pagesRef.current = eager
-
-    // 2. Load pdfPage for pages inside the render window.
-    loadPagesInRange(activePage - RENDER_WINDOW, activePage + RENDER_WINDOW)
-  }, [activePage, pdfDoc, loadPagesInRange])
 
   // ── File loading ───────────────────────────────────────────────────────────
   const handleFileChange = useCallback(async (file) => {
@@ -695,7 +740,7 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
       } else {
         imageBlob = page.imageBlob
       }
-      const layoutResult = await detectLayout(imageBlob, `page-${page.pageNo}.png`)
+      const layoutResult = await runLayoutDetection(imageBlob, `page-${page.pageNo}.png`)
       const orderedBlocks = computeReadingOrder(layoutResult.layout_blocks, layoutResult.image_width)
 
       const updatedPages = [...pages]
@@ -712,7 +757,7 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
       setRedoStack([])
 
       if (documentIdRef.current) {
-        savePage(documentIdRef.current, page.pageNo, {
+        savePageContent(documentIdRef.current, page.pageNo, {
           session_id: layoutResult.session_id,
           image_w: layoutResult.image_width,
           image_h: layoutResult.image_height,
@@ -720,12 +765,16 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
           status: 'layout-detected',
         }).catch(e => console.warn('layout save failed:', e.message))
       }
+
+      // Fire TATR for any table blocks — non-blocking
+      triggerTatrForTableBlocks(activePage, layoutResult.session_id, orderedBlocks)
+        .catch(e => console.warn('TATR trigger failed:', e.message))
     } catch (err) {
       alert(`Layout detection failed: ${err.message}`)
     } finally {
       setIsProcessing(false)
     }
-  }, [pages, activePage])
+  }, [pages, activePage, triggerTatrForTableBlocks])
 
   const handleRunOcr = useCallback(async (sessionId, layoutBlocks) => {
     setIsProcessing(true)
@@ -744,15 +793,15 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
 
       if (documentIdRef.current) {
         try {
-          await savePage(documentIdRef.current, page.pageNo, {
+          await savePageContent(documentIdRef.current, page.pageNo, {
             ocr_blocks: ocrResult.ocr_blocks,
             status: 'ocr-complete',
           })
+          setOcrVersion(v => v + 1)  // only after blocks are safely on the backend
         } catch (e) {
           console.warn('ocr save failed:', e.message)
         }
       }
-      setOcrVersion(v => v + 1)
     } catch (err) {
       alert(`OCR failed: ${err.message}`)
     } finally {
@@ -783,8 +832,15 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
       // If none match (e.g. a brand-new canvas block), fall back to a full re-fetch so the
       // backend can generate structured content that includes the new block.
       const newBlockIdSet = new Set(Object.keys(newOcrById))
-      const anyNodeMatched = (structuredContentRef.current?.nodes || []).some(node =>
-        (node.source_block_ids || []).some(id => newBlockIdSet.has(id))
+      function nodeTreeContainsAny(nodes, idSet) {
+        return nodes.some(n =>
+          (n.source_block_ids || []).some(id => idSet.has(id)) ||
+          (n.children?.length && nodeTreeContainsAny(n.children, idSet))
+        )
+      }
+      const anyNodeMatched = nodeTreeContainsAny(
+        structuredContentRef.current?.nodes || [],
+        newBlockIdSet
       )
 
       const patched = (structuredContentRef.current && anyNodeMatched)
@@ -798,6 +854,7 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
       const mergedIds = new Set(merged.map(b => b.block_id))
       const isComplete = [...allLayoutIds].every(id => mergedIds.has(id))
 
+      let saveOk = !documentIdRef.current  // no save needed → treat as OK
       if (documentIdRef.current) {
         const savePayload = { ocr_blocks: merged, status: 'ocr-complete' }
         if (patched) {
@@ -810,7 +867,8 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
           savePayload.structure_status = 'edited'
         }
         try {
-          await savePage(documentIdRef.current, page.pageNo, savePayload)
+          await savePageContent(documentIdRef.current, page.pageNo, savePayload)
+          saveOk = true
         } catch (e) {
           console.warn('ocr save failed:', e.message)
         }
@@ -819,8 +877,8 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
       if (patched) {
         // Surgical update — preserves all other content and user edits
         documentEditorRef.current?.patchContent(patched)
-      } else if (isComplete) {
-        // Full re-fetch only when merged covers all layout blocks
+      } else if (isComplete && saveOk) {
+        // Full re-fetch only when merged covers all layout blocks AND save succeeded
         setOcrVersion(v => v + 1)
       }
       // Incomplete + no patch: existing document content is unchanged
@@ -847,6 +905,48 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
     const prevBlockIds = new Set((targetPage.layoutBlocks || []).map(b => b.id))
     const newBlockIds = new Set(orderedBlocks.map(b => b.id))
     const deletedIds = new Set([...prevBlockIds].filter(id => !newBlockIds.has(id)))
+
+    // Detect newly drawn table blocks or blocks relabeled to 'table' that need TATR
+    const newTableBlocks = orderedBlocks.filter(
+      b => b.label === 'table' && !b.table_structure && !prevBlockIds.has(b.id)
+    )
+    if (newTableBlocks.length > 0 && targetPage.sessionId) {
+      triggerTatrForTableBlocks(pageIdx, targetPage.sessionId, newTableBlocks)
+        .catch(e => console.warn('TATR trigger (new block) failed:', e.message))
+    }
+
+    // Detect bbox-resized table blocks — debounce TATR re-run 800 ms after last drag frame
+    const prevBlockMap = Object.fromEntries((targetPage.layoutBlocks || []).map(b => [b.id, b]))
+    for (const b of orderedBlocks) {
+      if (b.label !== 'table' || !b.table_structure) continue
+      const prev = prevBlockMap[b.id]
+      if (!prev) continue
+      const [ox1, oy1, ox2, oy2] = prev.bbox
+      const [nx1, ny1, nx2, ny2] = b.bbox
+      if (ox1 === nx1 && oy1 === ny1 && ox2 === nx2 && oy2 === ny2) continue
+      // bbox changed — schedule TATR re-run
+      clearTimeout(tatrRetriggerTimerRef.current[b.id])
+      tatrRetriggerTimerRef.current[b.id] = setTimeout(() => {
+        const page = pagesRef.current[pageIdx]
+        if (!page?.sessionId) return
+        const currentBlock = page.layoutBlocks?.find(lb => lb.id === b.id)
+        if (!currentBlock || currentBlock.label !== 'table') return
+        // Clear old structure so TATR re-runs on the new bbox
+        setPages(prev => {
+          const u = [...prev]
+          if (!u[pageIdx]) return prev
+          u[pageIdx] = {
+            ...u[pageIdx],
+            layoutBlocks: u[pageIdx].layoutBlocks.map(lb =>
+              lb.id === b.id ? { ...lb, table_structure: null, corners: null } : lb
+            ),
+          }
+          return u
+        })
+        triggerTatrForTableBlocks(pageIdx, page.sessionId, [{ ...currentBlock, table_structure: null }])
+          .catch(e => console.warn('TATR retrigger (bbox resize) failed:', e.message))
+      }, 800)
+    }
 
     const updatedPages = [...pages]
     updatedPages[pageIdx] = {
@@ -876,7 +976,7 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
       structuredContentRef.current = cleaned
       documentEditorRef.current?.patchContent(cleaned)
       if (documentIdRef.current && targetPage) {
-        savePage(documentIdRef.current, targetPage.pageNo, {
+        savePageContent(documentIdRef.current, targetPage.pageNo, {
           structured_content: cleaned,
           structure_status: 'edited',
         }).catch(e => console.warn('structured cleanup save failed:', e.message))
@@ -888,8 +988,10 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
       const p = updatedPages[pageIdx]
       clearTimeout(blocksSaveTimerRef.current[pageIdx])
       blocksSaveTimerRef.current[pageIdx] = setTimeout(() => {
-        savePage(docId, p.pageNo, {
-          layout_blocks: orderedBlocks,
+        const latestPage = pagesRef.current[pageIdx]
+        const latestBlocks = latestPage?.layoutBlocks ?? orderedBlocks
+        savePageContent(docId, p.pageNo, {
+          layout_blocks: latestBlocks,
           ...(p.sessionId ? { session_id: p.sessionId } : {}),
           ...(p.imageW ? { image_w: p.imageW } : {}),
           ...(p.imageH ? { image_h: p.imageH } : {}),
@@ -955,17 +1057,93 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
 
   const labelMap = { text: 'plain_text', title: 'title', formula: 'isolate_formula', table: 'table', figure: 'figure' }
   const handleSetActiveTool = useCallback((toolId) => {
-    if (selectedBlockId && toolId !== 'select' && labelMap[toolId]) {
-      const page = pages[activePage]
-      const updated = page.layoutBlocks.map(b =>
-        b.id === selectedBlockId ? { ...b, label: labelMap[toolId] } : b
-      )
-      const updatedPages = [...pages]
-      updatedPages[activePage] = { ...updatedPages[activePage], layoutBlocks: updated }
-      setPages(updatedPages)
+    const newLabel = labelMap[toolId]
+    if (newLabel && newLabel !== 'table') {
+      if (selectedCell) {
+        // Update the type of the selected cell within a finalized table
+        const page = pages[activePage]
+        const updated = page.layoutBlocks.map(b => {
+          if (b.id !== selectedCell.blockId) return b
+          const ts = b.table_structure
+          if (!ts?.finalized) return b
+          const newCellTypes = (ts.cell_types || []).map((row, r) =>
+            row.map((t, c) => (r === selectedCell.row && c === selectedCell.col) ? newLabel : t)
+          )
+          return { ...b, table_structure: { ...ts, cell_types: newCellTypes } }
+        })
+        const updatedPages = [...pages]
+        updatedPages[activePage] = { ...updatedPages[activePage], layoutBlocks: updated }
+        setPages(updatedPages)
+        if (documentIdRef.current) {
+          const p = pages[activePage]
+          savePageContent(documentIdRef.current, p.pageNo, {
+            layout_blocks: updated,
+          }).catch(e => console.warn('cell type save failed:', e.message))
+        }
+      } else if (selectedBlockId) {
+        // Update the label of the selected canvas block (existing behaviour)
+        const page = pages[activePage]
+        const updated = page.layoutBlocks.map(b =>
+          b.id === selectedBlockId ? { ...b, label: newLabel } : b
+        )
+        const updatedPages = [...pages]
+        updatedPages[activePage] = { ...updatedPages[activePage], layoutBlocks: updated }
+        setPages(updatedPages)
+        if (documentIdRef.current) {
+          const p = pages[activePage]
+          savePageContent(documentIdRef.current, p.pageNo, {
+            layout_blocks: updated,
+          }).catch(e => console.warn('block label save failed:', e.message))
+        }
+      }
     }
     setActiveTool(toolId)
-  }, [selectedBlockId, activePage, pages, labelMap])
+  }, [selectedCell, selectedBlockId, activePage, pages, labelMap])
+
+  useEffect(() => {
+    const KEY_TO_TOOL = {
+      '1': 'text', '2': 'title', '3': 'formula', '4': 'table', '5': 'figure',
+      't': 'text', 'h': 'title', 'f': 'formula', 'b': 'table', 'g': 'figure',
+      'Escape': 'select',
+    }
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      const tag = document.activeElement?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (document.activeElement?.isContentEditable) return
+      const toolId = KEY_TO_TOOL[e.key]
+      if (!toolId) return
+      e.preventDefault()
+      handleSetActiveTool(toolId)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleSetActiveTool])
+
+  const handleDividerMouseDown = useCallback((e) => {
+    e.preventDefault()
+    isDraggingSplitRef.current = true
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const onMove = (e) => {
+      if (!isDraggingSplitRef.current || !splitContainerRef.current) return
+      const rect = splitContainerRef.current.getBoundingClientRect()
+      const ratio = (e.clientX - rect.left) / rect.width
+      setSplitRatio(Math.max(0.2, Math.min(0.8, ratio)))
+    }
+
+    const onUp = () => {
+      isDraggingSplitRef.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [])
 
   const activePage_data = pages[activePage]
   const detectingCount = pages.filter(p => p.status === 'detecting' || p.status === 'queued').length
@@ -1006,40 +1184,65 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
           activeTool={activeTool}
           setActiveTool={handleSetActiveTool}
           selectedBlockLabel={
-            selectedBlockId
-              ? activePage_data?.layoutBlocks?.find(b => b.id === selectedBlockId)?.label
-              : null
+            selectedCell
+              ? activePage_data?.layoutBlocks
+                  ?.find(b => b.id === selectedCell.blockId)
+                  ?.table_structure?.cell_types?.[selectedCell.row]?.[selectedCell.col]
+                  ?? 'plain_text'
+              : selectedBlockId
+                ? activePage_data?.layoutBlocks?.find(b => b.id === selectedBlockId)?.label
+                : null
           }
           onPreloadPages={loadPagesInRange}
         />
 
         {activePage_data && (
-          <div className="flex flex-1 min-w-0 overflow-hidden">
-            <CanvasPane
-              pages={pages}
-              activePage={activePage}
-              pdfLoadProgress={pdfLoadProgress}
-              selectedBlockId={selectedBlockId}
-              onSelectBlock={setSelectedBlockId}
-              onSelectBlocks={setSelectedBlockIds}
-              onBlocksChange={handleBlocksChange}
-              onActivePageChange={setActivePage}
-              activeTool={activeTool}
-              viewMode={viewMode}
-            />
+          <div ref={splitContainerRef} className="flex flex-1 min-w-0 overflow-hidden">
+            {/* CanvasPane — width controlled by splitRatio in split mode */}
+            <div
+              className="flex min-w-0 overflow-hidden"
+              style={viewMode === 'split' ? { flex: `0 0 ${splitRatio * 100}%` } : { flex: '1 1 0' }}
+            >
+              <CanvasPane
+                pages={pages}
+                activePage={activePage}
+                pdfLoadProgress={pdfLoadProgress}
+                selectedBlockId={selectedBlockId}
+                onSelectBlock={(id) => { setSelectedBlockId(id); if (!id) setSelectedCell(null) }}
+                onSelectBlocks={setSelectedBlockIds}
+                onBlocksChange={handleBlocksChange}
+                onActivePageChange={setActivePage}
+                activeTool={activeTool}
+                viewMode={viewMode}
+                tatrRunningBlockIds={tatrRunningBlockIds}
+                finalizingBlockIds={finalizingBlockIds}
+                onFinalizeBlock={handleFinalizeBlock}
+                onCellSelect={setSelectedCell}
+              />
+            </div>
 
-            <DocumentEditor
-              ref={documentEditorRef}
-              docId={documentIdRef.current}
-              pageNo={activePage_data.pageNo}
-              ocrBlocks={activePage_data.ocrBlocks}
-              pageStatus={activePage_data.status}
-              selectedBlockId={selectedBlockId}
-              onSelectBlock={setSelectedBlockId}
-              sessionId={activePage_data.sessionId}
-              ocrVersion={ocrVersion}
-              onStructureChange={(c) => { structuredContentRef.current = c; setStructuredContent(c) }}
-            />
+            {viewMode === 'split' && (
+              <>
+                {/* Drag handle */}
+                <div
+                  className="w-1 flex-shrink-0 bg-gray-300 hover:bg-blue-400 transition-colors duration-100 cursor-col-resize z-10"
+                  onMouseDown={handleDividerMouseDown}
+                />
+                <DocumentEditor
+                  ref={documentEditorRef}
+                  docId={documentIdRef.current}
+                  pageNo={activePage_data.pageNo}
+                  ocrBlocks={activePage_data.ocrBlocks}
+                  pageStatus={activePage_data.status}
+                  selectedBlockId={selectedBlockId}
+                  onSelectBlock={setSelectedBlockId}
+                  sessionId={activePage_data.sessionId}
+                  ocrVersion={ocrVersion}
+                  onStructureChange={(c) => { structuredContentRef.current = c; setStructuredContent(c) }}
+                  layoutBlocks={activePage_data.layoutBlocks}
+                />
+              </>
+            )}
           </div>
         )}
       </div>

@@ -1,6 +1,7 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { getPageStructure, savePage } from '../services/extractorApi'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { getPageStructure, savePageContent } from '../services/DocumentRepository'
 import TipTapEditor from './editor/TipTapEditor'
+import { LayoutBlocksContext } from './editor/LayoutBlocksContext.jsx'
 
 const DocumentEditor = forwardRef(function DocumentEditor({
   docId,
@@ -10,6 +11,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   onSelectBlock,
   ocrVersion = 0,
   onStructureChange,
+  layoutBlocks,
 }, ref) {
   const [structuredContent, setStructuredContent] = useState(null)
   const [contentKey, setContentKey] = useState(0)
@@ -18,6 +20,13 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   const saveTimerRef = useRef(null)
   const scrollRef = useRef(null)
   const onStructureChangeRef = useRef(onStructureChange)
+
+  const layoutBlockMap = useMemo(() => {
+    if (!layoutBlocks?.length) return {}
+    return Object.fromEntries(
+      layoutBlocks.map(b => [b.id, { readingOrder: b.reading_order, confidence: b.confidence ?? 1 }])
+    )
+  }, [layoutBlocks])
   useEffect(() => { onStructureChangeRef.current = onStructureChange }, [onStructureChange])
 
   useImperativeHandle(ref, () => ({
@@ -57,7 +66,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     if (!docId || !pageNo) return
     clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => {
-      savePage(docId, pageNo, {
+      savePageContent(docId, pageNo, {
         structured_content: updated,
         structure_status: 'edited',
       }).catch(e => console.warn('save failed:', e.message))
@@ -86,7 +95,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     )
   }
 
-  if (error) {
+  if (error && !structuredContent) {
     return (
       <div className={containerCls}>
         <EditorPlaceholder text={`Error: ${error}`} />
@@ -104,18 +113,20 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       </div>
 
       {/* Document scroll container */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto bg-gray-100">
-        <div className="max-w-[720px] mx-auto my-8 bg-white rounded-xl shadow-sm border border-gray-200 px-12 py-10 min-h-[calc(100vh-200px)]">
-          {structuredContent && (
-            <TipTapEditor
-              structuredContent={structuredContent}
-              contentKey={contentKey}
-              onContentChange={handleContentChange}
-              highlightedNodeId={highlightedNodeId}
-            />
-          )}
+      <LayoutBlocksContext.Provider value={layoutBlockMap}>
+        <div ref={scrollRef} className="flex-1 overflow-y-auto bg-gray-100">
+          <div className="max-w-[720px] mx-auto my-8 bg-white rounded-xl shadow-sm border border-gray-200 px-12 py-10 min-h-[calc(100vh-200px)]">
+            {structuredContent && (
+              <TipTapEditor
+                structuredContent={structuredContent}
+                contentKey={contentKey}
+                onContentChange={handleContentChange}
+                highlightedNodeId={highlightedNodeId}
+              />
+            )}
+          </div>
         </div>
-      </div>
+      </LayoutBlocksContext.Provider>
     </div>
   )
 })
