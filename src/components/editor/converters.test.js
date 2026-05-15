@@ -87,10 +87,10 @@ describe('converters — unknown type warnings', () => {
       expect(warnSpy).not.toHaveBeenCalled()
     })
 
-    it('does not warn for known type: question', () => {
+    it('warns for removed type: question (now treated as unknown)', () => {
       const doc = { nodes: [{ type: 'question', id: 'n1', source_block_ids: [], stem: [], options: [] }] }
       structuredToTipTap(doc)
-      expect(warnSpy).not.toHaveBeenCalled()
+      expect(warnSpy).toHaveBeenCalledWith('[converters] Unknown node type — skipped:', 'question')
     })
 
     it('does not warn for known type: table', () => {
@@ -155,10 +155,10 @@ describe('converters — unknown type warnings', () => {
       expect(warnSpy).not.toHaveBeenCalled()
     })
 
-    it('does not warn for known type: questionBlock', () => {
+    it('warns for removed type: questionBlock (now treated as unknown)', () => {
       const tipTapDoc = { content: [{ type: 'questionBlock', attrs: { stem: '[]', options: '[]' } }] }
       tipTapToStructured(tipTapDoc, { nodes: [] })
-      expect(warnSpy).not.toHaveBeenCalled()
+      expect(warnSpy).toHaveBeenCalledWith('[converters] Unknown TipTap node type — skipped:', 'questionBlock')
     })
 
     it('does not warn for known type: table', () => {
@@ -230,14 +230,10 @@ describe('structuredToTipTap — per-type conversion', () => {
     expect(node.content[0]).toEqual({ type: 'text', text: 'Chapter 1' })
   })
 
-  it('question → TipTap questionBlock with stem and options as JSON attrs', () => {
+  it('question node is skipped — falls back to empty paragraph', () => {
     const result = structuredToTipTap(structured(QUESTION))
-    const node = result.content[0]
-    expect(node.type).toBe('questionBlock')
-    expect(node.attrs.nodeId).toBe('n3')
-    expect(node.attrs.number).toBe(1)
-    expect(JSON.parse(node.attrs.stem)).toEqual(QUESTION.stem)
-    expect(JSON.parse(node.attrs.options)).toEqual(QUESTION.options)
+    expect(result.content).toHaveLength(1)
+    expect(result.content[0].type).toBe('paragraph')
   })
 
   it('image → TipTap imagePlaceholder with url and alt attrs', () => {
@@ -302,15 +298,9 @@ describe('tipTapToStructured — per-type conversion', () => {
     expect(node.content[0]).toEqual({ type: 'latex', value: 'E=mc^2', display: true })
   })
 
-  it('questionBlock → structured question with parsed stem and options', () => {
+  it('questionBlock is skipped — no structured node produced', () => {
     const result = tipTapToStructured(tipTapDoc(TT_QUESTION), ORIG)
-    const node = result.nodes[0]
-    expect(node.type).toBe('question')
-    expect(node.id).toBe('n3')
-    expect(node.number).toBe(1)
-    expect(node.stem).toEqual([{ type: 'text', value: 'Q?' }])
-    expect(node.options).toEqual([{ label: 'A' }])
-    expect(node.source_block_ids).toEqual(['b3'])
+    expect(result.nodes).toHaveLength(0)
   })
 
   it('imagePlaceholder → structured image with url and alt', () => {
@@ -377,13 +367,11 @@ describe('round-trip: structuredToTipTap → tipTapToStructured', () => {
     expect(result.nodes[0].cells[1][0][0]).toEqual({ type: 'text', value: 'Cell' })
   })
 
-  it('questionBlock stem and options survive round-trip', () => {
+  it('question node round-trip — fallback paragraph passes through unchanged', () => {
     const tipTap = structuredToTipTap(structured(QUESTION))
     const result = tipTapToStructured(tipTap, structured(QUESTION))
-    const node = result.nodes[0]
-    expect(node.type).toBe('question')
-    expect(node.stem).toEqual(QUESTION.stem)
-    expect(node.options).toEqual(QUESTION.options)
+    expect(result.nodes).toHaveLength(1)
+    expect(result.nodes[0].type).toBe('paragraph')
   })
 })
 
@@ -400,11 +388,11 @@ describe('edge cases', () => {
     expect(() => tipTapToStructured(tipTapDoc(node), ORIG)).not.toThrow()
   })
 
-  it('multi-node document: one of each type produces nodes in correct order', () => {
+  it('multi-node document: question is skipped, others produce nodes in correct order', () => {
     const result = structuredToTipTap(structured(SECTION, PARA, QUESTION, IMAGE, ERROR))
-    expect(result.content).toHaveLength(5)
+    expect(result.content).toHaveLength(4)
     expect(result.content.map(n => n.type)).toEqual([
-      'heading', 'paragraph', 'questionBlock', 'imagePlaceholder', 'errorBlock',
+      'heading', 'paragraph', 'imagePlaceholder', 'errorBlock',
     ])
   })
 

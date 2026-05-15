@@ -1,6 +1,5 @@
 import SectionNode from './SectionNode'
 import ParagraphNode from './ParagraphNode'
-import QuestionNode from './QuestionNode'
 import TableNode from './TableNode'
 import ImageNode from './ImageNode'
 
@@ -30,7 +29,6 @@ function renderNode(node, { onChange, onSelect, highlightedNodeId }) {
       )
       break
     case 'paragraph': inner = <ParagraphNode {...props} />; break
-    case 'question':  inner = <QuestionNode  {...props} />; break
     case 'table':     inner = <TableNode     {...props} />; break
     case 'image':     inner = <ImageNode     {...props} />; break
     default: return null

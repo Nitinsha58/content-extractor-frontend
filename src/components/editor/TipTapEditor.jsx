@@ -8,7 +8,6 @@ import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table
 import Placeholder from '@tiptap/extension-placeholder'
 import MathInline from './extensions/MathInline'
 import MathBlock from './extensions/MathBlock'
-import QuestionBlock from './extensions/QuestionBlock'
 import ImagePlaceholder from './extensions/ImagePlaceholder'
 import ErrorBlock from './extensions/ErrorBlock'
 import { guardedNodeView } from './extensions/utils'
@@ -59,6 +58,10 @@ function ParagraphView({ node, editor, getPos, deleteNode }) {
             if (pos == null) return
             editor.chain().focus(pos + 1).setHeading({ level: 2 }).run()
           }}
+          onCopy={() => {
+            const structured = tipTapToStructured({ type: 'doc', content: [node.toJSON()] }, {})
+            navigator.clipboard.writeText(JSON.stringify(structured.nodes[0] ?? node.toJSON(), null, 2))
+          }}
         />
       )}
       <NodeViewContent as="p" />
@@ -94,6 +97,10 @@ function HeadingView({ node, editor, getPos, deleteNode }) {
             const pos = getPos?.()
             if (pos == null) return
             editor.chain().focus(pos + 1).setParagraph().run()
+          }}
+          onCopy={() => {
+            const structured = tipTapToStructured({ type: 'doc', content: [node.toJSON()] }, {})
+            navigator.clipboard.writeText(JSON.stringify(structured.nodes[0] ?? node.toJSON(), null, 2))
           }}
         />
       )}
@@ -167,7 +174,6 @@ export default function TipTapEditor({
       }),
       MathInline,
       MathBlock,
-      QuestionBlock,
       ImagePlaceholder,
       ErrorBlock,
     ],

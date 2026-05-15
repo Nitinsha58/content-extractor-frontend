@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   DndContext, closestCenter, PointerSensor, KeyboardSensor,
   useSensor, useSensors,
@@ -12,10 +12,10 @@ import { CSS } from '@dnd-kit/utilities'
 const TYPE_META = {
   paragraph: { icon: 'T', color: 'text-gray-600', bg: 'bg-gray-100', label: 'Text' },
   section:   { icon: 'H', color: 'text-purple-600', bg: 'bg-purple-100', label: 'Heading' },
-  question:  { icon: 'Q', color: 'text-blue-600', bg: 'bg-blue-100', label: 'Question' },
   table:     { icon: '≡', color: 'text-green-600', bg: 'bg-green-100', label: 'Table' },
   image:     { icon: '⬜', color: 'text-orange-600', bg: 'bg-orange-100', label: 'Image' },
 }
+
 
 function nodePreview(node) {
   if (node.type === 'section') {
@@ -24,10 +24,6 @@ function nodePreview(node) {
   if (node.type === 'paragraph') {
     const text = (node.content || []).filter(b => b.type === 'text').map(b => b.value ?? '').join(' ').trim()
     return text || '(empty paragraph)'
-  }
-  if (node.type === 'question') {
-    const stem = (node.stem || []).filter(b => b.type === 'text').map(b => b.value ?? '').join(' ').trim()
-    return `Q${node.number ?? ''}: ${stem || '(no stem)'}`
   }
   if (node.type === 'table') return `Table (${node.rows ?? 0}×${node.cols ?? 0})`
   if (node.type === 'image') return node.alt || 'Image'
@@ -88,6 +84,7 @@ function BlockItem({ node, isSelected, onSelect, onAction }) {
       {/* Action buttons — visible only when selected */}
       {isSelected && (
         <div className="flex gap-0.5 flex-shrink-0 ml-1" onClick={e => e.stopPropagation()}>
+          <CopyActionBtn node={node} />
           {node.type === 'paragraph' && (
             <ActionBtn title="Convert to heading" onClick={() => onAction('to-heading', node.id)}>H</ActionBtn>
           )}
@@ -98,6 +95,24 @@ function BlockItem({ node, isSelected, onSelect, onAction }) {
         </div>
       )}
     </div>
+  )
+}
+
+function CopyActionBtn({ node }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = () => {
+    navigator.clipboard.writeText(JSON.stringify(node, null, 2))
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <button
+      title="Copy block text"
+      onClick={handleCopy}
+      className="w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center transition-colors text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+    >
+      {copied ? '✓' : '⎘'}
+    </button>
   )
 }
 

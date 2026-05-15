@@ -79,16 +79,6 @@ export function structuredToTipTap(structuredContent) {
       } else if (node.type === 'paragraph') {
         const paras = contentToTipTapParagraph(node.content || [], meta)
         tipTapNodes.push(...paras)
-      } else if (node.type === 'question') {
-        tipTapNodes.push({
-          type: 'questionBlock',
-          attrs: {
-            ...meta,
-            number: node.number ?? null,
-            stem: JSON.stringify(node.stem || []),
-            options: JSON.stringify(node.options || []),
-          },
-        })
       } else if (node.type === 'table') {
         tipTapNodes.push(buildTable(node, meta))
       } else if (node.type === 'image') {
@@ -206,17 +196,6 @@ export function tipTapToStructured(tipTapDoc, originalStructured) {
       }
       if (currentSection) currentSection.children.push(blockNode)
       else resultNodes.push(blockNode)
-    } else if (n.type === 'questionBlock') {
-      const qNode = {
-        id: nodeId,
-        type: 'question',
-        number: meta.number ?? null,
-        stem: JSON.parse(meta.stem || '[]'),
-        options: JSON.parse(meta.options || '[]'),
-        source_block_ids: sourceBlockIds,
-      }
-      if (currentSection) currentSection.children.push(qNode)
-      else resultNodes.push(qNode)
     } else if (n.type === 'table') {
       const tableNode = rebuildTable(n, nodeId, sourceBlockIds)
       if (currentSection) currentSection.children.push(tableNode)

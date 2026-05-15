@@ -8,15 +8,16 @@ import { BlockAnnotation } from '../LayoutBlocksContext.jsx'
 
 function renderInline(blocks = []) {
   return blocks.map((b, i) => {
+    const spacer = i > 0 ? ' ' : ''
     if (b.type === 'latex') {
       let html
       try { html = katex.renderToString(b.value, { displayMode: !!b.display, throwOnError: false }) }
       catch { html = `<code>$${b.value}$</code>` }
       return b.display
         ? <div key={i} className="text-center my-1" dangerouslySetInnerHTML={{ __html: html }} />
-        : <span key={i} dangerouslySetInnerHTML={{ __html: html }} />
+        : <span key={i}>{spacer}<span dangerouslySetInnerHTML={{ __html: html }} /></span>
     }
-    return <span key={i}>{b.value ?? ''}</span>
+    return <span key={i}>{spacer}{b.value ?? ''}</span>
   })
 }
 

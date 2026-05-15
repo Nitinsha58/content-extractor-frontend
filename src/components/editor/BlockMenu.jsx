@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Fragment } from '@tiptap/pm/model'
 
 export function moveBlock(editor, getPos, direction) {
@@ -28,7 +29,7 @@ export function moveBlock(editor, getPos, direction) {
   }
 }
 
-export default function BlockMenu({ editor, getPos, onDelete, convertLabel, onConvert }) {
+export default function BlockMenu({ editor, getPos, onDelete, convertLabel, onConvert, onCopy }) {
   const stop = (e) => { e.preventDefault(); e.stopPropagation() }
 
   return (
@@ -39,6 +40,12 @@ export default function BlockMenu({ editor, getPos, onDelete, convertLabel, onCo
     >
       <Btn onClick={() => moveBlock(editor, getPos, 'up')} title="Move up">↑</Btn>
       <Btn onClick={() => moveBlock(editor, getPos, 'down')} title="Move down">↓</Btn>
+      {onCopy && (
+        <>
+          <Sep />
+          <CopyBtn onCopy={onCopy} />
+        </>
+      )}
       {convertLabel && (
         <>
           <Sep />
@@ -61,6 +68,24 @@ function Btn({ onClick, title, danger, children }) {
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClick?.() }}
     >
       {children}
+    </button>
+  )
+}
+
+function CopyBtn({ onCopy }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = () => {
+    onCopy()
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <button
+      className="px-1.5 py-0.5 rounded text-xs font-medium leading-none transition-colors text-gray-400 hover:bg-gray-100"
+      title="Copy block text"
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCopy() }}
+    >
+      {copied ? '✓' : '⎘'}
     </button>
   )
 }
