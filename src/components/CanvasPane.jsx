@@ -288,6 +288,11 @@ export default function CanvasPane({
   const onActivePageChangeRef = useRef(onActivePageChange)
   useEffect(() => { onActivePageChangeRef.current = onActivePageChange }, [onActivePageChange])
 
+  // Keep activePage in a ref so the zoom-correction effect can read the current
+  // value without listing it as a dependency (which would re-fire on every page nav).
+  const activePageRef = useRef(activePage)
+  useEffect(() => { activePageRef.current = activePage }, [activePage])
+
   const registerPageEl = useCallback((idx, el) => {
     if (el) pageElsRef.current.set(idx, el)
     else pageElsRef.current.delete(idx)
@@ -377,6 +382,13 @@ export default function CanvasPane({
     scrollToPage(activePage)
   }, [activePage, scrollToPage])
 
+  // ── Zoom change → re-anchor on active page ────────────────────────────────
+  // When zoom changes, every page's pixel height changes but scrollTop stays
+  // fixed, so the viewport drifts to a different page. Jump back instantly.
+  useEffect(() => {
+    scrollToPage(activePageRef.current, 'instant')
+  }, [zoom, scrollToPage])
+
   // Sync the editable page-number input.
   useEffect(() => {
     setPageInput(String(pages[activePage]?.pageNo ?? activePage + 1))
@@ -422,6 +434,7 @@ export default function CanvasPane({
           flexDirection: 'column',
           alignItems: 'center',
           padding: '40px 16px 80px',
+          minWidth: 'max-content',
         }}>
           {pages.map((page, idx) => (
             <PdfPageView
