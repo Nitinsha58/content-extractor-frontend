@@ -3,7 +3,8 @@ import { createContext, useContext } from 'react'
 export const LayoutBlocksContext = createContext(null)
 
 export function useBlockMeta(sourceBlockIdsStr) {
-  const map = useContext(LayoutBlocksContext)
+  const ctx = useContext(LayoutBlocksContext)
+  const map = ctx?.map
   if (!map || !sourceBlockIdsStr) return null
   const ids = sourceBlockIdsStr.split(',').filter(Boolean)
   if (!ids.length) return null
@@ -21,19 +22,20 @@ export function useBlockMeta(sourceBlockIdsStr) {
 }
 
 export function BlockAnnotation({ sourceBlockIdsStr }) {
+  const ctx = useContext(LayoutBlocksContext)
   const meta = useBlockMeta(sourceBlockIdsStr)
-  if (!meta) return null
+  if (!meta || !ctx?.showAnnotations) return null
 
   const pct = Math.round(meta.confidence * 100)
   const isLow = pct < 70
 
   return (
-    <div className="flex items-center gap-1 mb-0.5 select-none pointer-events-none">
-      <span className="text-[10px] font-mono text-gray-400 leading-none">
-        Block {meta.blockNumber}
+    <div className="absolute right-0 top-0.5 flex items-center gap-1 select-none pointer-events-none z-10">
+      <span className="text-[9px] font-mono text-gray-300 leading-none">
+        #{meta.blockNumber}
       </span>
-      <span className={`text-[10px] font-mono leading-none ${isLow ? 'text-red-400 font-medium' : 'text-gray-400'}`}>
-        · {pct}%
+      <span className={`text-[9px] font-mono leading-none ${isLow ? 'text-red-300' : 'text-gray-300'}`}>
+        {pct}%
       </span>
     </div>
   )

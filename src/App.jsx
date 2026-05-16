@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { usePageWindow } from './usePageWindow'
 import pdfjsLib from './pdf/pdfConfig'
-import { runLayoutDetection, runTableStructureAnalysis, runTableCellTypeDetection, runOcr, exportDocument, createDocument, updateDocument, savePageContent, getPage, getDocument } from './services/DocumentRepository'
+import { runLayoutDetection, runTableStructureAnalysis, runTableCellTypeDetection, runOcr, runOcrStream, exportDocument, createDocument, updateDocument, savePageContent, getPage, getDocument } from './services/DocumentRepository'
 import { computeReadingOrder } from './utils/readingOrder'
 import TopBar from './components/TopBar'
 import PagesPanel from './components/PagesPanel'
@@ -132,7 +132,7 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
   const [selectedBlockId, setSelectedBlockId] = useState(null)
   const [selectedBlockIds, setSelectedBlockIds] = useState([])
   const [activeTool, setActiveTool] = useState('select')
-  const [viewMode, setViewMode] = useState('overlay')
+  const [viewMode, setViewMode] = useState('split')
   const [undoStack, setUndoStack] = useState([])
   const [redoStack, setRedoStack] = useState([])
   const [isProcessing, setIsProcessing] = useState(false)
@@ -143,6 +143,9 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
   const [selectedCell, setSelectedCell] = useState(null)
   const [pdfLoadProgress, setPdfLoadProgress] = useState(null)
   const [structuredContent, setStructuredContent] = useState(null)
+  // null while idle; { blockIds: string[], results: Record<blockId, ocrBlock> } while streaming
+  const [streamingOcrState, setStreamingOcrState] = useState(null)
+  const streamingGenRef = useRef(0)
 
   // ── Page window hook ───────────────────────────────────────────────────────
   const { pages, pagesRef, setPages, loadPagesInRange, loadGenRef } = usePageWindow({ pdfDoc, activePage })
@@ -777,37 +780,55 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
   }, [pages, activePage, triggerTatrForTableBlocks])
 
   const handleRunOcr = useCallback(async (sessionId, layoutBlocks) => {
-    setIsProcessing(true)
-    const page = pages[activePage]
-    try {
-      const currentLayoutBlocks = layoutBlocks || page?.layoutBlocks || []
-      const ocrResult = await runOcr(sessionId || page.sessionId, currentLayoutBlocks)
+    const page = pagesRef.current[activePage]
+    if (!page) return
 
-      const updatedPages = [...pages]
-      updatedPages[activePage] = {
-        ...updatedPages[activePage],
-        ocrBlocks: ocrResult.ocr_blocks,
-        status: 'ocr-complete',
-      }
-      setPages(updatedPages)
+    const currentLayoutBlocks = layoutBlocks || page.layoutBlocks || []
+    const sessionIdToUse = sessionId || page.sessionId
+
+    // Start skeleton phase — all blocks pending
+    const blockIds = currentLayoutBlocks.map(b => b.id)
+    const streamGen = ++streamingGenRef.current
+    setStreamingOcrState({ blockIds, results: {} })
+    setIsProcessing(true)
+
+    try {
+      const allResults = []
+
+      await runOcrStream(sessionIdToUse, currentLayoutBlocks, (block) => {
+        if (streamingGenRef.current !== streamGen) return  // page switched — discard
+        allResults.push(block)
+        setStreamingOcrState(prev =>
+          prev ? { ...prev, results: { ...prev.results, [block.block_id]: block } } : null
+        )
+      })
+
+      // End skeleton phase, commit results
+      setStreamingOcrState(null)
+      setPages(prev => {
+        const u = [...prev]
+        if (u[activePage]) u[activePage] = { ...u[activePage], ocrBlocks: allResults, status: 'ocr-complete' }
+        return u
+      })
 
       if (documentIdRef.current) {
         try {
           await savePageContent(documentIdRef.current, page.pageNo, {
-            ocr_blocks: ocrResult.ocr_blocks,
+            ocr_blocks: allResults,
             status: 'ocr-complete',
           })
-          setOcrVersion(v => v + 1)  // only after blocks are safely on the backend
+          setOcrVersion(v => v + 1)
         } catch (e) {
           console.warn('ocr save failed:', e.message)
         }
       }
     } catch (err) {
+      setStreamingOcrState(null)
       alert(`OCR failed: ${err.message}`)
     } finally {
       setIsProcessing(false)
     }
-  }, [pages, activePage])
+  }, [activePage])
 
   const handleRunOcrSelected = useCallback(async (blockIds) => {
     const page = pages[activePage]
@@ -889,16 +910,21 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
     }
   }, [pages, activePage])
 
-  const handleBlocksChange = useCallback((pageIdx, newBlocks) => {
+  const handleBlocksChange = useCallback((pageIdx, newBlocks, opts = {}) => {
     if (typeof pageIdx !== 'number') {
       newBlocks = pageIdx
       pageIdx = activePage
     }
+    const { skipUndo = false, undoSnapshot } = opts
     const targetPage = pages[pageIdx]
     if (!targetPage) return
 
-    setUndoStack(prev => [...prev, { pageIdx, blocks: targetPage.layoutBlocks }])
-    setRedoStack([])
+    if (!skipUndo) {
+      // undoSnapshot: provided by BlockOverlay on mouseUp with the pre-drag state
+      // default: snapshot current blocks (for instantaneous changes like draw/delete)
+      setUndoStack(prev => [...prev, { pageIdx, blocks: undoSnapshot ?? targetPage.layoutBlocks }])
+      setRedoStack([])
+    }
 
     const orderedBlocks = computeReadingOrder(newBlocks, targetPage.imageW || 0)
 
@@ -1024,6 +1050,8 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
   }, [pages, redoStack])
 
   const handleSelectPage = useCallback((idx) => {
+    streamingGenRef.current++  // invalidate any in-flight streaming callbacks
+    setStreamingOcrState(null)
     setActivePage(idx)
     setSelectedBlockId(null)
     setSelectedBlockIds([])
@@ -1240,6 +1268,7 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
                   ocrVersion={ocrVersion}
                   onStructureChange={(c) => { structuredContentRef.current = c; setStructuredContent(c) }}
                   layoutBlocks={activePage_data.layoutBlocks}
+                  streamingOcrState={streamingOcrState}
                 />
               </>
             )}

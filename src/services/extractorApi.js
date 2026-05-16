@@ -40,6 +40,33 @@ export async function analyzeTableStructure(sessionId, blockId, bbox) {
   return r.json()
 }
 
+export async function runOcrStream(sessionId, layoutBlocks, onBlock) {
+  const r = await fetch(`${BASE}/api/debug/ocr/stream/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, layout_blocks: layoutBlocks }),
+  })
+  if (!r.ok) {
+    const text = await r.text()
+    throw new Error(`OCR stream ${r.status}: ${text}`)
+  }
+  const reader = r.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop()
+    for (const line of lines) {
+      if (line.trim()) {
+        try { onBlock(JSON.parse(line)) } catch { /* skip malformed line */ }
+      }
+    }
+  }
+}
+
 export async function runOcr(sessionId, layoutBlocks) {
   const r = await fetch(`${BASE}/api/debug/ocr/`, {
     method: 'POST',

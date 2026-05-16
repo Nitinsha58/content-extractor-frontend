@@ -236,7 +236,7 @@ function PdfPageView({
           bboxH={page.imageH || displayH}
           onSelectBlock={onSelectBlock}
           onSelectBlocks={onSelectBlocks}
-          onBlocksChange={(newBlocks) => onBlocksChange(pageIdx, newBlocks)}
+          onBlocksChange={(newBlocks, opts) => onBlocksChange(pageIdx, newBlocks, opts)}
           tatrRunningBlockIds={tatrRunningBlockIds}
           finalizingBlockIds={finalizingBlockIds}
           onFinalizeBlock={onFinalizeBlock}
@@ -388,6 +388,21 @@ export default function CanvasPane({
   useEffect(() => {
     scrollToPage(activePageRef.current, 'instant')
   }, [zoom, scrollToPage])
+
+  // ── Pinch-to-zoom (trackpad) ──────────────────────────────────────────────
+  // Pinch fires as wheel + ctrlKey on macOS. Must be non-passive to call
+  // preventDefault() and block the browser's own pinch handler.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const handler = (e) => {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      setZoom(prev => Math.min(3, Math.max(0.5, prev - e.deltaY * 0.008)))
+    }
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [])
 
   // Sync the editable page-number input.
   useEffect(() => {

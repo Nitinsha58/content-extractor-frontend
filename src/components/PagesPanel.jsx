@@ -47,7 +47,13 @@ export default function PagesPanel({
   selectedBlockLabel,
   onPreloadPages,
 }) {
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem('pages-panel-collapsed') === 'true'
+  )
+  const toggleCollapsed = (next) => {
+    setCollapsed(next)
+    localStorage.setItem('pages-panel-collapsed', String(next))
+  }
   const effectiveActiveTool = selectedBlockLabel ? LABEL_TO_TOOL[selectedBlockLabel] : activeTool
 
   const scrollContainerRef = useRef(null)
@@ -79,7 +85,7 @@ export default function PagesPanel({
     return (
       <div className="w-10 bg-white border-r border-gray-200 flex flex-col items-center py-2 gap-2 shrink-0">
         <button
-          onClick={() => setCollapsed(false)}
+          onClick={() => toggleCollapsed(false)}
           title="Expand sidebar"
           className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500"
         >
@@ -112,7 +118,7 @@ export default function PagesPanel({
       <div className="flex items-center justify-between px-2 py-2 bg-gray-50 border-b border-gray-200">
         <span className="text-xs font-semibold text-gray-600">Pages</span>
         <button
-          onClick={() => setCollapsed(true)}
+          onClick={() => toggleCollapsed(true)}
           title="Collapse sidebar"
           className="w-5 h-5 flex items-center justify-center rounded hover:bg-gray-200 text-gray-500"
         >

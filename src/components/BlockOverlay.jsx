@@ -50,6 +50,8 @@ export default function BlockOverlay({
   const maxX = bboxW || imageW / blockScale
   const maxY = bboxH || imageH / blockScale
   const containerRef = useRef(null)
+  // true from the first mousemove of a drag gesture; reset on mouseDown
+  const dragHasMovedRef = useRef(false)
   const [selectedIds, setSelectedIds] = useState(new Set(selectedBlockId ? [selectedBlockId] : []))
   const [dragging, setDragging] = useState(null)
   const [resizing, setResizing] = useState(null)
@@ -59,6 +61,10 @@ export default function BlockOverlay({
   const [draggingCorner, setDraggingCorner] = useState(null)
   // { blockId, row, col } — selected cell within a finalized table
   const [selectedCell, setSelectedCell] = useState(null)
+  // Block Clean Mode (Option/Alt held)
+  const [altHeld, setAltHeld] = useState(false)
+  const [drawingErase, setDrawingErase] = useState(null) // { blockId, startXFrac, startYFrac, currentXFrac, currentYFrac }
+  const [selectedEraseIdx, setSelectedEraseIdx] = useState(null) // { blockId, idx }
 
   useEffect(() => {
     setSelectedIds(prev => {
@@ -122,29 +128,53 @@ export default function BlockOverlay({
 
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (e.key === 'Alt') { e.preventDefault(); setAltHeld(true); return }
       const tag = document.activeElement?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       if (document.activeElement?.isContentEditable) return
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.size > 0) {
-        e.preventDefault()
-        const updated = layoutBlocks.filter(b => !selectedIds.has(b.id))
-        onBlocksChange(updated)
-        setSelectedIds(new Set())
-        setSelectedCell(null)
-        onCellSelect?.(null)
-        onSelectBlock(null)
-        onSelectBlocks?.([])
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Delete selected erase region first; fall through to block delete only if none selected
+        if (selectedEraseIdx) {
+          e.preventDefault()
+          const { blockId, idx } = selectedEraseIdx
+          const updated = layoutBlocks.map(b => {
+            if (b.id !== blockId) return b
+            const regions = (b.erase_regions || []).filter((_, i) => i !== idx)
+            return { ...b, erase_regions: regions.length ? regions : undefined }
+          })
+          onBlocksChange(updated)
+          setSelectedEraseIdx(null)
+          return
+        }
+        if (selectedIds.size > 0) {
+          e.preventDefault()
+          const updated = layoutBlocks.filter(b => !selectedIds.has(b.id))
+          onBlocksChange(updated)
+          setSelectedIds(new Set())
+          setSelectedCell(null)
+          onCellSelect?.(null)
+          onSelectBlock(null)
+          onSelectBlocks?.([])
+        }
       }
     }
+    const handleKeyUp = (e) => {
+      if (e.key === 'Alt') { setAltHeld(false); setDrawingErase(null) }
+    }
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedIds, layoutBlocks, onBlocksChange, onCellSelect])
+    window.addEventListener('keyup', handleKeyUp)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+    }
+  }, [selectedIds, selectedEraseIdx, layoutBlocks, onBlocksChange, onCellSelect])
 
   // ── Divider interaction (only when NOT finalized) ─────────────────────────
 
   const handleDividerMouseDown = (e, blockId, axis, dividerIdx) => {
     e.stopPropagation()
-    setDraggingDivider({ blockId, axis, dividerIdx })
+    dragHasMovedRef.current = false
+    setDraggingDivider({ blockId, axis, dividerIdx, startBlocks: layoutBlocks })
   }
 
   const handleDividerDoubleClick = (e, blockId, axis, dividerIdx) => {
@@ -199,7 +229,31 @@ export default function BlockOverlay({
     const { x, y } = toImageCoords(e)
     const [bx1, by1, bx2, by2] = block.bbox
     const initCorners = block.corners || [[bx1,by1],[bx2,by1],[bx2,by2],[bx1,by2]]
-    setDraggingCorner({ blockId, cornerIdx, startMouseX: x, startMouseY: y, startCornerPos: initCorners[cornerIdx], startCorners: initCorners })
+    dragHasMovedRef.current = false
+    setDraggingCorner({ blockId, cornerIdx, startMouseX: x, startMouseY: y, startCornerPos: initCorners[cornerIdx], startCorners: initCorners, startBlocks: layoutBlocks })
+  }
+
+  // ── Erase region helpers ──────────────────────────────────────────────────
+
+  const toBlockFrac = (pageX, pageY, block) => {
+    const [bx1, by1, bx2, by2] = block.bbox
+    return [
+      Math.max(0, Math.min(1, (pageX - bx1) / (bx2 - bx1))),
+      Math.max(0, Math.min(1, (pageY - by1) / (by2 - by1))),
+    ]
+  }
+
+  const handleEraseMouseDown = (e, block) => {
+    e.stopPropagation()
+    const { x, y } = toImageCoords(e)
+    const [xf, yf] = toBlockFrac(x, y, block)
+    setDrawingErase({ blockId: block.id, startXFrac: xf, startYFrac: yf, currentXFrac: xf, currentYFrac: yf })
+    setSelectedEraseIdx(null)
+  }
+
+  const handleEraseRegionClick = (e, block, idx) => {
+    e.stopPropagation()
+    setSelectedEraseIdx({ blockId: block.id, idx })
   }
 
   // ── Container mouse handlers ──────────────────────────────────────────────
@@ -227,9 +281,10 @@ export default function BlockOverlay({
       const xs = newCorners.map(c => c[0])
       const ys = newCorners.map(c => c[1])
       const newBbox = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]
+      dragHasMovedRef.current = true
       onBlocksChange(layoutBlocks.map(b =>
         b.id === draggingCorner.blockId ? { ...b, bbox: newBbox, corners: newCorners } : b
-      ))
+      ), { skipUndo: true })
       return
     }
 
@@ -245,15 +300,16 @@ export default function BlockOverlay({
           newDividers[draggingDivider.dividerIdx] = Math.round(frac * 10000) / 10000
           onBlocksChange(layoutBlocks.map(b =>
             b.id === draggingDivider.blockId ? { ...b, table_structure: { ...ts, row_dividers: newDividers, source: 'edited' } } : b
-          ))
+          ), { skipUndo: true })
         } else {
           const frac = Math.max(0.01, Math.min(0.99, (x - bx1) / (bx2 - bx1)))
           const newDividers = [...ts.col_dividers]
           newDividers[draggingDivider.dividerIdx] = Math.round(frac * 10000) / 10000
           onBlocksChange(layoutBlocks.map(b =>
             b.id === draggingDivider.blockId ? { ...b, table_structure: { ...ts, col_dividers: newDividers, source: 'edited' } } : b
-          ))
+          ), { skipUndo: true })
         }
+        dragHasMovedRef.current = true
       }
       return
     }
@@ -267,7 +323,8 @@ export default function BlockOverlay({
         const [x1, y1, x2, y2] = dragging.startBboxes[b.id]
         return { ...b, bbox: [Math.max(0, x1 + dx), Math.max(0, y1 + dy), Math.min(maxX, x2 + dx), Math.min(maxY, y2 + dy)] }
       })
-      onBlocksChange(updated)
+      dragHasMovedRef.current = true
+      onBlocksChange(updated, { skipUndo: true })
     }
 
     if (resizing) {
@@ -285,8 +342,19 @@ export default function BlockOverlay({
       else if (resizing.handle === 'e') { x2 = Math.min(maxX, x2 + dx) }
       else if (resizing.handle === 'w') { x1 = Math.max(0, x1 + dx) }
       if (x2 - x1 >= minSize && y2 - y1 >= minSize) {
-        onBlocksChange(layoutBlocks.map(b => b.id === resizing.blockId ? { ...b, bbox: [x1, y1, x2, y2] } : b))
+        dragHasMovedRef.current = true
+        onBlocksChange(layoutBlocks.map(b => b.id === resizing.blockId ? { ...b, bbox: [x1, y1, x2, y2] } : b), { skipUndo: true })
       }
+    }
+
+    if (drawingErase) {
+      const { x, y } = toImageCoords(e)
+      const block = layoutBlocks.find(b => b.id === drawingErase.blockId)
+      if (block) {
+        const [xf, yf] = toBlockFrac(x, y, block)
+        setDrawingErase(prev => ({ ...prev, currentXFrac: xf, currentYFrac: yf }))
+      }
+      return
     }
 
     if (drawing) {
@@ -301,23 +369,60 @@ export default function BlockOverlay({
   }
 
   const handleContainerMouseUp = () => {
-    if (draggingCorner) { setDraggingCorner(null); return }
+    if (draggingCorner) {
+      if (dragHasMovedRef.current) {
+        onBlocksChange(layoutBlocks, { undoSnapshot: draggingCorner.startBlocks })
+      }
+      setDraggingCorner(null)
+      return
+    }
 
     if (draggingDivider) {
       const block = layoutBlocks.find(b => b.id === draggingDivider.blockId)
       if (block?.table_structure && !block.table_structure.finalized) {
         const ts = block.table_structure
+        // Sort dividers to canonical order and commit a single undo entry
         onBlocksChange(layoutBlocks.map(b =>
           b.id === draggingDivider.blockId
             ? { ...b, table_structure: { ...ts, row_dividers: [...ts.row_dividers].sort((a, b) => a - b), col_dividers: [...ts.col_dividers].sort((a, b) => a - b) } }
             : b
-        ))
+        ), { undoSnapshot: draggingDivider.startBlocks })
       }
       setDraggingDivider(null)
       return
     }
 
-    if (dragging || resizing) { setDragging(null); setResizing(null) }
+    if (drawingErase) {
+      const { blockId, startXFrac, startYFrac, currentXFrac, currentYFrac } = drawingErase
+      const x1f = Math.min(startXFrac, currentXFrac)
+      const y1f = Math.min(startYFrac, currentYFrac)
+      const x2f = Math.max(startXFrac, currentXFrac)
+      const y2f = Math.max(startYFrac, currentYFrac)
+      // Only commit if the region is meaningfully sized (>0.5% of block in each axis)
+      if (x2f - x1f > 0.005 && y2f - y1f > 0.005) {
+        const updated = layoutBlocks.map(b => {
+          if (b.id !== blockId) return b
+          const regions = [...(b.erase_regions || []), [x1f, y1f, x2f, y2f]]
+          return { ...b, erase_regions: regions }
+        })
+        onBlocksChange(updated)
+      }
+      setDrawingErase(null)
+      return
+    }
+
+    if (dragging) {
+      if (dragHasMovedRef.current) {
+        onBlocksChange(layoutBlocks, { undoSnapshot: dragging.startBlocks })
+      }
+      setDragging(null)
+    }
+    if (resizing) {
+      if (dragHasMovedRef.current) {
+        onBlocksChange(layoutBlocks, { undoSnapshot: resizing.startBlocks })
+      }
+      setResizing(null)
+    }
 
     if (drawing) {
       const { startX, startY, currentX, currentY } = drawing
@@ -383,7 +488,8 @@ export default function BlockOverlay({
         const block = layoutBlocks.find(b => b.id === id)
         if (block) startBboxes[id] = [...block.bbox]
       })
-      setDragging({ blockId, startMouseX: x, startMouseY: y, startBboxes })
+      dragHasMovedRef.current = false
+      setDragging({ blockId, startMouseX: x, startMouseY: y, startBboxes, startBlocks: layoutBlocks })
     }
   }
 
@@ -391,7 +497,10 @@ export default function BlockOverlay({
     e.stopPropagation()
     const { x, y } = toImageCoords(e)
     const block = layoutBlocks.find(b => b.id === blockId)
-    if (block) setResizing({ blockId, handle, startMouseX: x, startMouseY: y, startBbox: [...block.bbox] })
+    if (block) {
+      dragHasMovedRef.current = false
+      setResizing({ blockId, handle, startMouseX: x, startMouseY: y, startBbox: [...block.bbox], startBlocks: layoutBlocks })
+    }
   }
 
   const ResizeHandle = ({ handle, color, blockId }) => {
@@ -413,7 +522,7 @@ export default function BlockOverlay({
     )
   }
 
-  const cursor = lasso ? 'crosshair' : activeTool === 'select' ? 'default' : 'crosshair'
+  const cursor = lasso ? 'crosshair' : (altHeld && selectedBlockId) ? 'crosshair' : activeTool === 'select' ? 'default' : 'crosshair'
 
   return (
     <div
@@ -423,7 +532,7 @@ export default function BlockOverlay({
       onMouseUp={handleContainerMouseUp}
       onMouseLeave={() => {
         setDragging(null); setResizing(null); setLasso(null)
-        setDraggingDivider(null); setDraggingCorner(null)
+        setDraggingDivider(null); setDraggingCorner(null); setDrawingErase(null)
       }}
       style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', cursor }}
     >
@@ -463,6 +572,64 @@ export default function BlockOverlay({
               <div style={{ position: 'absolute', bottom: '2px', right: '2px', fontSize: '9px', background: color.border, color: 'white', padding: '1px 3px', borderRadius: '2px', pointerEvents: 'none', zIndex: 1 }}>
                 {block.reading_order}
               </div>
+
+              {/* Erase regions */}
+              {(block.erase_regions || []).map((region, idx) => {
+                const [xf1, yf1, xf2, yf2] = region
+                const isEraseSelected = selectedEraseIdx?.blockId === block.id && selectedEraseIdx?.idx === idx
+                return (
+                  <div
+                    key={`erase-${idx}`}
+                    onClick={altHeld ? (e) => handleEraseRegionClick(e, block, idx) : undefined}
+                    style={{
+                      position: 'absolute',
+                      left: `${xf1 * 100}%`,
+                      top: `${yf1 * 100}%`,
+                      width: `${(xf2 - xf1) * 100}%`,
+                      height: `${(yf2 - yf1) * 100}%`,
+                      background: 'rgba(255,255,255,0.92)',
+                      border: isEraseSelected ? '1.5px solid #ef4444' : '1px dashed #f97316',
+                      boxSizing: 'border-box',
+                      zIndex: 5,
+                      cursor: altHeld ? 'pointer' : 'default',
+                      pointerEvents: altHeld ? 'auto' : 'none',
+                    }}
+                  />
+                )
+              })}
+
+              {/* Block Clean Mode: erase draw capture layer + hint */}
+              {altHeld && isSelected && (
+                <>
+                  <div
+                    onMouseDown={(e) => handleEraseMouseDown(e, block)}
+                    style={{ position: 'absolute', inset: 0, zIndex: 4, cursor: 'crosshair', background: 'rgba(251,146,60,0.06)' }}
+                  />
+                  <div style={{ position: 'absolute', top: '2px', right: '2px', fontSize: '7px', background: 'rgba(255,255,255,0.9)', color: '#92400e', padding: '1px 4px', borderRadius: 2, pointerEvents: 'none', zIndex: 5, fontFamily: 'system-ui,sans-serif', whiteSpace: 'nowrap', border: '0.5px solid rgba(249,115,22,0.3)' }}>
+                    drag: +erase · click: select · del: remove
+                  </div>
+                  {/* In-progress erase draw preview */}
+                  {drawingErase?.blockId === block.id && (() => {
+                    const { startXFrac, startYFrac, currentXFrac, currentYFrac } = drawingErase
+                    const x1f = Math.min(startXFrac, currentXFrac)
+                    const y1f = Math.min(startYFrac, currentYFrac)
+                    const x2f = Math.max(startXFrac, currentXFrac)
+                    const y2f = Math.max(startYFrac, currentYFrac)
+                    return (
+                      <div style={{
+                        position: 'absolute',
+                        left: `${x1f * 100}%`, top: `${y1f * 100}%`,
+                        width: `${(x2f - x1f) * 100}%`, height: `${(y2f - y1f) * 100}%`,
+                        background: 'rgba(255,255,255,0.85)',
+                        border: '1px dashed #f97316',
+                        boxSizing: 'border-box',
+                        pointerEvents: 'none',
+                        zIndex: 6,
+                      }} />
+                    )
+                  })()}
+                </>
+              )}
 
               {/* TATR / Finalize loading spinner */}
               {(tatrRunningBlockIds?.has(block.id) || isBeingFinalized) && (

@@ -15,6 +15,49 @@ import BlockMenu from './BlockMenu'
 import { structuredToTipTap, tipTapToStructured } from './converters'
 import { buildClipboardEnvelope } from '../../utils/clipboard'
 
+// ── Table node view with hover menu ───────────────────────────────────────────
+// contentDOMElementTag:'tbody' ensures ProseMirror's managed element is a valid
+// <tbody> nested inside the <table> rendered by NodeViewContent, giving valid HTML.
+
+function TableView({ node, editor, getPos, deleteNode }) {
+  const [hovered, setHovered] = useState(false)
+  const nodeId = node.attrs.nodeId || undefined
+  const sourceBlock = node.attrs.sourceBlockIds?.split(',')[0] || undefined
+
+  return (
+    <NodeViewWrapper
+      as="div"
+      draggable={true}
+      className="relative"
+      data-node-id={nodeId}
+      data-source-block={sourceBlock}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div
+        data-drag-handle
+        contentEditable={false}
+        className={`absolute -left-6 top-1 cursor-grab text-base text-gray-400 leading-none select-none transition-opacity ${hovered ? 'opacity-60' : 'opacity-0'}`}
+      >
+        ⠿
+      </div>
+      <BlockAnnotation sourceBlockIdsStr={node.attrs.sourceBlockIds} />
+      {hovered && (
+        <BlockMenu
+          editor={editor}
+          getPos={getPos}
+          onDelete={() => deleteNode()}
+          onCopy={() => {
+            const structured = tipTapToStructured({ type: 'doc', content: [node.toJSON()] }, {})
+            navigator.clipboard.writeText(JSON.stringify(buildClipboardEnvelope('block', structured.nodes[0] ?? node.toJSON()), null, 2))
+          }}
+        />
+      )}
+      <NodeViewContent as="table" style={{ whiteSpace: 'normal' }} />
+    </NodeViewWrapper>
+  )
+}
+
 // ── Paragraph node view with hover menu ───────────────────────────────────────
 
 function ParagraphView({ node, editor, getPos, deleteNode }) {
@@ -41,12 +84,22 @@ function ParagraphView({ node, editor, getPos, deleteNode }) {
   return (
     <NodeViewWrapper
       as="div"
+      draggable={!insideTable}
       className="relative"
       data-node-id={nodeId}
       data-source-block={sourceBlock}
       onMouseEnter={() => !insideTable && setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
+      {!insideTable && (
+        <div
+          data-drag-handle
+          contentEditable={false}
+          className={`absolute -left-6 top-0.5 cursor-grab text-base text-gray-400 leading-none select-none transition-opacity ${hovered ? 'opacity-60' : 'opacity-0'}`}
+        >
+          ⠿
+        </div>
+      )}
       {!insideTable && <BlockAnnotation sourceBlockIdsStr={node.attrs.sourceBlockIds} />}
       {!insideTable && hovered && (
         <BlockMenu
@@ -81,12 +134,20 @@ function HeadingView({ node, editor, getPos, deleteNode }) {
   return (
     <NodeViewWrapper
       as="div"
+      draggable={true}
       className="relative"
       data-node-id={nodeId}
       data-source-block={sourceBlock}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
+      <div
+        data-drag-handle
+        contentEditable={false}
+        className={`absolute -left-6 top-0.5 cursor-grab text-base text-gray-400 leading-none select-none transition-opacity ${hovered ? 'opacity-60' : 'opacity-0'}`}
+      >
+        ⠿
+      </div>
       <BlockAnnotation sourceBlockIdsStr={node.attrs.sourceBlockIds} />
       {hovered && (
         <BlockMenu
@@ -113,6 +174,7 @@ function HeadingView({ node, editor, getPos, deleteNode }) {
 // ── Extended nodes with meta attrs + node views ────────────────────────────────
 
 const ParagraphWithMeta = Paragraph.extend({
+  draggable: true,
   addAttributes() {
     return {
       nodeId: { default: null, renderHTML: (a) => a.nodeId ? { 'data-node-id': a.nodeId } : {} },
@@ -127,6 +189,7 @@ const ParagraphWithMeta = Paragraph.extend({
 })
 
 const HeadingWithMeta = Heading.extend({
+  draggable: true,
   addAttributes() {
     return {
       ...this.parent?.(),
@@ -137,6 +200,21 @@ const HeadingWithMeta = Heading.extend({
   },
   addNodeView() {
     return guardedNodeView(HeadingView)
+  },
+})
+
+const TableWithMeta = Table.extend({
+  draggable: true,
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      nodeId: { default: null, renderHTML: (a) => a.nodeId ? { 'data-node-id': a.nodeId } : {} },
+      sourceBlockIds: { default: '', renderHTML: (a) => a.sourceBlockIds ? { 'data-source-block': a.sourceBlockIds.split(',')[0] } : {} },
+      nodeType: { default: 'table', renderHTML: () => ({}) },
+    }
+  },
+  addNodeView() {
+    return guardedNodeView(TableView, { contentDOMElementTag: 'tbody' })
   },
 })
 
@@ -165,7 +243,7 @@ export default function TipTapEditor({
       }),
       ParagraphWithMeta,
       HeadingWithMeta.configure({ levels: [1, 2, 3] }),
-      Table.configure({ resizable: false }),
+      TableWithMeta.configure({ resizable: false }),
       TableRow,
       TableCell,
       TableHeader,

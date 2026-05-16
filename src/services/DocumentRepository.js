@@ -3,6 +3,7 @@ import {
   analyzeCellTypes as _analyzeCellTypes,
   analyzeTableStructure as _analyzeTableStructure,
   runOcr as _runOcr,
+  runOcrStream as _runOcrStream,
   exportDocument as _exportDocument,
   figureCropUrl as _figureCropUrl,
   sessionImageUrl as _sessionImageUrl,
@@ -51,6 +52,14 @@ export async function runOcr(sessionId, layoutBlocks) {
     return await _runOcr(sessionId, layoutBlocks)
   } catch (cause) {
     throw normalise('runOcr', cause)
+  }
+}
+
+export async function runOcrStream(sessionId, layoutBlocks, onBlock) {
+  try {
+    return await _runOcrStream(sessionId, layoutBlocks, onBlock)
+  } catch (cause) {
+    throw normalise('runOcrStream', cause)
   }
 }
 
