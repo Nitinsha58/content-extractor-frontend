@@ -8,6 +8,8 @@ import {
   sortableKeyboardCoordinates,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { uploadFigureToS3 } from '../../services/extractorApi'
+import { buildClipboardEnvelope } from '../../utils/clipboard'
 
 const TYPE_META = {
   paragraph: { icon: 'T', color: 'text-gray-600', bg: 'bg-gray-100', label: 'Text' },
@@ -30,7 +32,7 @@ function nodePreview(node) {
   return node.type
 }
 
-function BlockItem({ node, isSelected, onSelect, onAction }) {
+function BlockItem({ node, isSelected, onSelect, onAction, docId, pageNo, onNodePatch, onUploadStateChange }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: node.id })
 
@@ -43,6 +45,7 @@ function BlockItem({ node, isSelected, onSelect, onAction }) {
   const meta = TYPE_META[node.type] || { icon: '•', color: 'text-gray-500', bg: 'bg-gray-100', label: node.type }
   const preview = nodePreview(node)
   const isSection = node.type === 'section'
+  const isS3Uploaded = node.type === 'image' && Boolean(node.s3_url)
 
   return (
     <div
@@ -53,9 +56,11 @@ function BlockItem({ node, isSelected, onSelect, onAction }) {
       className={`flex items-start gap-1.5 px-2 py-1.5 rounded border cursor-pointer transition-colors
         ${isSelected
           ? 'bg-blue-50 border-blue-400'
-          : isSection
-            ? 'bg-purple-50/40 border-purple-200 hover:bg-purple-50'
-            : 'border-gray-200 hover:bg-gray-50'
+          : isS3Uploaded
+            ? 'border-green-400 hover:bg-green-50'
+            : isSection
+              ? 'bg-purple-50/40 border-purple-200 hover:bg-purple-50'
+              : 'border-gray-200 hover:bg-gray-50'
         }`}
     >
       {/* Drag handle */}
@@ -78,13 +83,24 @@ function BlockItem({ node, isSelected, onSelect, onAction }) {
         <div className={`text-[11px] truncate leading-snug ${isSection ? 'font-semibold text-gray-800' : 'text-gray-700'}`}>
           {preview}
         </div>
-        <div className="text-[10px] text-gray-400 mt-0.5">{meta.label}</div>
+        <div className="flex items-center gap-1 mt-0.5">
+          <span className="text-[10px] text-gray-400">{meta.label}</span>
+          {isS3Uploaded && (
+            <span className="text-[9px] text-green-600 font-semibold">S3</span>
+          )}
+        </div>
       </div>
 
       {/* Action buttons — visible only when selected */}
       {isSelected && (
         <div className="flex gap-0.5 flex-shrink-0 ml-1" onClick={e => e.stopPropagation()}>
-          <CopyActionBtn node={node} />
+          <CopyActionBtn
+            node={node}
+            docId={docId}
+            pageNo={pageNo}
+            onNodePatch={onNodePatch}
+            onUploadStateChange={onUploadStateChange}
+          />
           {node.type === 'paragraph' && (
             <ActionBtn title="Convert to heading" onClick={() => onAction('to-heading', node.id)}>H</ActionBtn>
           )}
@@ -98,20 +114,59 @@ function BlockItem({ node, isSelected, onSelect, onAction }) {
   )
 }
 
-function CopyActionBtn({ node }) {
-  const [copied, setCopied] = useState(false)
-  const handleCopy = () => {
-    navigator.clipboard.writeText(JSON.stringify(node, null, 2))
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+function CopyActionBtn({ node, docId, pageNo, onNodePatch, onUploadStateChange }) {
+  const [status, setStatus] = useState('idle') // idle | uploading | copied | error
+
+  const handleCopy = async () => {
+    if (node.type !== 'image') {
+      navigator.clipboard.writeText(JSON.stringify(buildClipboardEnvelope('block', node), null, 2))
+      setStatus('copied')
+      setTimeout(() => setStatus('idle'), 1500)
+      return
+    }
+
+    // Image node: use cached s3_url or upload first
+    if (node.s3_url) {
+      navigator.clipboard.writeText(JSON.stringify(buildClipboardEnvelope('block', { ...node, url: node.s3_url }), null, 2))
+      setStatus('copied')
+      setTimeout(() => setStatus('idle'), 1500)
+      return
+    }
+
+    // Upload to S3 then copy
+    setStatus('uploading')
+    onUploadStateChange(true)
+    try {
+      const { s3_url } = await uploadFigureToS3(node.url, docId, pageNo, node.id)
+      // Patch local node state
+      onNodePatch(node.id, { s3_url })
+      navigator.clipboard.writeText(JSON.stringify(buildClipboardEnvelope('block', { ...node, url: s3_url, s3_url }), null, 2))
+      setStatus('copied')
+      setTimeout(() => setStatus('idle'), 1500)
+    } catch (e) {
+      console.error('S3 upload failed:', e)
+      setStatus('error')
+      setTimeout(() => setStatus('idle'), 2500)
+    } finally {
+      onUploadStateChange(false)
+    }
   }
+
+  const label = status === 'uploading' ? '↑' : status === 'copied' ? '✓' : status === 'error' ? '!' : '⎘'
+  const colorCls = status === 'error'
+    ? 'text-red-400'
+    : status === 'uploading'
+      ? 'text-blue-400 animate-pulse'
+      : 'text-gray-400 hover:bg-gray-200 hover:text-gray-700'
+
   return (
     <button
-      title="Copy block text"
+      title={node.type === 'image' ? 'Copy (uploads image to S3)' : 'Copy block'}
       onClick={handleCopy}
-      className="w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center transition-colors text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+      disabled={status === 'uploading'}
+      className={`w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center transition-colors ${colorCls}`}
     >
-      {copied ? '✓' : '⎘'}
+      {label}
     </button>
   )
 }
@@ -138,7 +193,11 @@ export default function BlocksPanel({
   onNodeSelect,
   onReorder,
   onAction,
+  onNodePatch,
+  docId,
+  pageNo,
 }) {
+  const [uploading, setUploading] = useState(false)
   const nodes = structuredContent?.nodes ?? []
 
   const sensors = useSensors(
@@ -161,54 +220,68 @@ export default function BlocksPanel({
   }
 
   return (
-    <div className="w-52 flex-shrink-0 flex flex-col border-l border-gray-200 bg-white overflow-hidden">
-      {/* Header */}
-      <div className="px-3 py-2.5 border-b border-gray-100 bg-gray-50 shrink-0">
-        <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Structure</p>
-        {nodes.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-1.5">
-            {Object.entries(typeCounts).map(([type, count]) => {
-              const meta = TYPE_META[type] || { bg: 'bg-gray-100', color: 'text-gray-500' }
-              return (
-                <span key={type} className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${meta.bg} ${meta.color}`}>
-                  {count} {type}
-                </span>
-              )
-            })}
-          </div>
-        )}
-      </div>
+    <>
+      {/* Upload indicator — fixed top-centre of viewport */}
+      {uploading && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-blue-600 text-white text-xs font-medium px-4 py-2 rounded-full shadow-lg flex items-center gap-2 pointer-events-none">
+          <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin inline-block" />
+          Uploading to S3…
+        </div>
+      )}
 
-      {/* Block list */}
-      <div className="flex-1 overflow-y-auto p-1.5">
-        {!structuredContent ? (
-          <p className="text-[11px] text-gray-400 text-center mt-6 px-3 leading-relaxed">
-            Run OCR to see document structure
-          </p>
-        ) : nodes.length === 0 ? (
-          <p className="text-[11px] text-gray-400 text-center mt-6">No blocks</p>
-        ) : (
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleDragEnd}
-          >
-            <SortableContext items={nodes.map(n => n.id)} strategy={verticalListSortingStrategy}>
-              <div className="space-y-0.5">
-                {nodes.map(node => (
-                  <BlockItem
-                    key={node.id}
-                    node={node}
-                    isSelected={selectedNodeId === node.id}
-                    onSelect={onNodeSelect}
-                    onAction={onAction}
-                  />
-                ))}
-              </div>
-            </SortableContext>
-          </DndContext>
-        )}
+      <div className="w-52 flex-shrink-0 flex flex-col border-l border-gray-200 bg-white overflow-hidden">
+        {/* Header */}
+        <div className="px-3 py-2.5 border-b border-gray-100 bg-gray-50 shrink-0">
+          <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Structure</p>
+          {nodes.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {Object.entries(typeCounts).map(([type, count]) => {
+                const meta = TYPE_META[type] || { bg: 'bg-gray-100', color: 'text-gray-500' }
+                return (
+                  <span key={type} className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${meta.bg} ${meta.color}`}>
+                    {count} {type}
+                  </span>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Block list */}
+        <div className="flex-1 overflow-y-auto p-1.5">
+          {!structuredContent ? (
+            <p className="text-[11px] text-gray-400 text-center mt-6 px-3 leading-relaxed">
+              Run OCR to see document structure
+            </p>
+          ) : nodes.length === 0 ? (
+            <p className="text-[11px] text-gray-400 text-center mt-6">No blocks</p>
+          ) : (
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext items={nodes.map(n => n.id)} strategy={verticalListSortingStrategy}>
+                <div className="space-y-0.5">
+                  {nodes.map(node => (
+                    <BlockItem
+                      key={node.id}
+                      node={node}
+                      isSelected={selectedNodeId === node.id}
+                      onSelect={onNodeSelect}
+                      onAction={onAction}
+                      docId={docId}
+                      pageNo={pageNo}
+                      onNodePatch={onNodePatch}
+                      onUploadStateChange={setUploading}
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   )
 }

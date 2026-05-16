@@ -145,3 +145,13 @@ export async function getPageStructure(docId, pageNumber) {
   if (!r.ok) throw new Error(`getPageStructure ${r.status}: ${await r.text()}`)
   return r.json()  // { structured_content: {...} }
 }
+
+export async function uploadFigureToS3(localUrl) {
+  const r = await fetch(`${BASE}/api/figures/upload-s3/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ local_url: localUrl }),
+  })
+  if (!r.ok) throw new Error(`uploadFigureToS3 ${r.status}: ${await r.text()}`)
+  return r.json()  // { s3_url }
+}

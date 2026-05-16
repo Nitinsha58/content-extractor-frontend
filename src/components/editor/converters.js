@@ -88,6 +88,7 @@ export function structuredToTipTap(structuredContent) {
             ...meta,
             url: node.url || '',
             alt: node.alt || '',
+            s3_url: node.s3_url || '',
           },
         })
       } else if (node.type === 'error') {
@@ -207,6 +208,7 @@ export function tipTapToStructured(tipTapDoc, originalStructured) {
         url: meta.url || '',
         alt: meta.alt || '',
         source_block_ids: sourceBlockIds,
+        ...(meta.s3_url ? { s3_url: meta.s3_url } : {}),
       }
       if (currentSection) currentSection.children.push(imgNode)
       else resultNodes.push(imgNode)

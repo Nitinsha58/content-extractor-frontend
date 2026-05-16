@@ -13,6 +13,7 @@ import ErrorBlock from './extensions/ErrorBlock'
 import { guardedNodeView } from './extensions/utils'
 import BlockMenu from './BlockMenu'
 import { structuredToTipTap, tipTapToStructured } from './converters'
+import { buildClipboardEnvelope } from '../../utils/clipboard'
 
 // ── Paragraph node view with hover menu ───────────────────────────────────────
 
@@ -60,7 +61,7 @@ function ParagraphView({ node, editor, getPos, deleteNode }) {
           }}
           onCopy={() => {
             const structured = tipTapToStructured({ type: 'doc', content: [node.toJSON()] }, {})
-            navigator.clipboard.writeText(JSON.stringify(structured.nodes[0] ?? node.toJSON(), null, 2))
+            navigator.clipboard.writeText(JSON.stringify(buildClipboardEnvelope('block', structured.nodes[0] ?? node.toJSON()), null, 2))
           }}
         />
       )}
@@ -100,7 +101,7 @@ function HeadingView({ node, editor, getPos, deleteNode }) {
           }}
           onCopy={() => {
             const structured = tipTapToStructured({ type: 'doc', content: [node.toJSON()] }, {})
-            navigator.clipboard.writeText(JSON.stringify(structured.nodes[0] ?? node.toJSON(), null, 2))
+            navigator.clipboard.writeText(JSON.stringify(buildClipboardEnvelope('block', structured.nodes[0] ?? node.toJSON()), null, 2))
           }}
         />
       )}
