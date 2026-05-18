@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useEditor, EditorContent, NodeViewWrapper, NodeViewContent } from '@tiptap/react'
 import { BlockAnnotation } from './LayoutBlocksContext.jsx'
 import StarterKit from '@tiptap/starter-kit'
@@ -11,9 +11,52 @@ import MathBlock from './extensions/MathBlock'
 import ImagePlaceholder from './extensions/ImagePlaceholder'
 import ErrorBlock from './extensions/ErrorBlock'
 import { guardedNodeView } from './extensions/utils'
-import BlockMenu from './BlockMenu'
+import BlockMenu, { moveBlock } from './BlockMenu'
 import { structuredToTipTap, tipTapToStructured } from './converters'
 import { buildClipboardEnvelope } from '../../utils/clipboard'
+
+// Context that lets node views open the block context menu at a viewport position.
+const BlockCtxMenuContext = createContext(null)
+
+// Build a clipboard envelope for the current text selection.
+// For a partial selection within one block, copies only the selected portion.
+// For a cross-block selection, copies each whole touched node.
+// Returns null when nothing is selected.
+function buildSelectionEnvelope(editor) {
+  const { from, to } = editor.state.selection
+  console.log('[DEBUG-bse] selType:', editor.state.selection.constructor?.name, 'from:', from, 'to:', to)
+  if (from === to) return null
+
+  const slice = editor.state.doc.slice(from, to)
+  console.log('[DEBUG-bse] childCount:', slice.content.childCount, 'openStart:', slice.openStart, 'openEnd:', slice.openEnd)
+
+  // Single block selected (paragraph, heading, mathBlock): use only the sliced content
+  if (slice.content.childCount === 1) {
+    const blockNode = slice.content.firstChild
+    const typeName = blockNode?.type.name
+    console.log('[DEBUG-bse] single-block typeName:', typeName, 'content items:', blockNode?.content?.childCount)
+    if (blockNode && (typeName === 'paragraph' || typeName === 'heading' || typeName === 'mathBlock')) {
+      const json = blockNode.toJSON()
+      console.log('[DEBUG-bse] blockNode.toJSON().content:', JSON.stringify(json.content))
+      const structured = tipTapToStructured({ type: 'doc', content: [json] }, {})
+      console.log('[DEBUG-bse] structured.nodes[0]:', !!structured.nodes[0], structured.nodes[0]?.content?.length, 'items')
+      if (structured.nodes[0]) return buildClipboardEnvelope('block', structured.nodes[0])
+    }
+  }
+
+  // Multi-block or complex node (table, image): copy each whole touched top-level node
+  console.log('[DEBUG-bse] fallthrough to nodesBetween')
+  const touched = []
+  editor.state.doc.nodesBetween(from, to, (node, _pos, parent) => {
+    if (parent?.type.name === 'doc') touched.push(node)
+    return true
+  })
+  if (!touched.length) return null
+  const structured = tipTapToStructured({ type: 'doc', content: touched.map(n => n.toJSON()) }, {})
+  return touched.length === 1
+    ? buildClipboardEnvelope('block', structured.nodes[0] ?? touched[0].toJSON())
+    : buildClipboardEnvelope('nodes', structured.nodes)
+}
 
 // ── Table node view with hover menu ───────────────────────────────────────────
 // contentDOMElementTag:'tbody' ensures ProseMirror's managed element is a valid
@@ -21,8 +64,25 @@ import { buildClipboardEnvelope } from '../../utils/clipboard'
 
 function TableView({ node, editor, getPos, deleteNode }) {
   const [hovered, setHovered] = useState(false)
+  const openCtxMenu = useContext(BlockCtxMenuContext)
   const nodeId = node.attrs.nodeId || undefined
   const sourceBlock = node.attrs.sourceBlockIds?.split(',')[0] || undefined
+
+  const handleContextMenu = (e) => {
+    e.preventDefault()
+    const selEnvelope = buildSelectionEnvelope(editor)
+    const blockJson = tipTapToStructured({ type: 'doc', content: [node.toJSON()] }, {})
+    const blockEnvelope = buildClipboardEnvelope('block', blockJson.nodes[0] ?? node.toJSON())
+    openCtxMenu?.(e.clientX, e.clientY, [
+      { label: '↑ Move up', onClick: () => moveBlock(editor, getPos, 'up') },
+      { label: '↓ Move down', onClick: () => moveBlock(editor, getPos, 'down') },
+      { separator: true },
+      { label: '⎘ Copy block', copyFeedback: true, onClick: () => navigator.clipboard.writeText(JSON.stringify(blockEnvelope, null, 2)) },
+      ...(selEnvelope ? [{ label: 'Copy selected', copyFeedback: true, onClick: () => navigator.clipboard.writeText(JSON.stringify(selEnvelope, null, 2)) }] : []),
+      { separator: true },
+      { label: '✕ Delete', danger: true, onClick: () => deleteNode() },
+    ])
+  }
 
   return (
     <NodeViewWrapper
@@ -33,6 +93,7 @@ function TableView({ node, editor, getPos, deleteNode }) {
       data-source-block={sourceBlock}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onContextMenu={handleContextMenu}
     >
       <div
         data-drag-handle
@@ -62,6 +123,7 @@ function TableView({ node, editor, getPos, deleteNode }) {
 
 function ParagraphView({ node, editor, getPos, deleteNode }) {
   const [hovered, setHovered] = useState(false)
+  const openCtxMenu = useContext(BlockCtxMenuContext)
   const nodeId = node.attrs.nodeId || undefined
   const sourceBlock = node.attrs.sourceBlockIds?.split(',')[0] || undefined
 
@@ -81,6 +143,25 @@ function ParagraphView({ node, editor, getPos, deleteNode }) {
     return false
   }, []) // stable: paragraph's table-containment doesn't change without remount
 
+  const handleContextMenu = (e) => {
+    if (insideTable) return
+    e.preventDefault()
+    const selEnvelope = buildSelectionEnvelope(editor)
+    const blockJson = tipTapToStructured({ type: 'doc', content: [node.toJSON()] }, {})
+    const blockEnvelope = buildClipboardEnvelope('block', blockJson.nodes[0] ?? node.toJSON())
+    openCtxMenu?.(e.clientX, e.clientY, [
+      { label: '↑ Move up', onClick: () => moveBlock(editor, getPos, 'up') },
+      { label: '↓ Move down', onClick: () => moveBlock(editor, getPos, 'down') },
+      { separator: true },
+      { label: '⎘ Copy block', copyFeedback: true, onClick: () => navigator.clipboard.writeText(JSON.stringify(blockEnvelope, null, 2)) },
+      ...(selEnvelope ? [{ label: 'Copy selected', copyFeedback: true, onClick: () => navigator.clipboard.writeText(JSON.stringify(selEnvelope, null, 2)) }] : []),
+      { separator: true },
+      { label: '→H2', onClick: () => { const pos = getPos?.(); if (pos != null) editor.chain().focus(pos + 1).setHeading({ level: 2 }).run() } },
+      { separator: true },
+      { label: '✕ Delete', danger: true, onClick: () => deleteNode() },
+    ])
+  }
+
   return (
     <NodeViewWrapper
       as="div"
@@ -90,6 +171,7 @@ function ParagraphView({ node, editor, getPos, deleteNode }) {
       data-source-block={sourceBlock}
       onMouseEnter={() => !insideTable && setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onContextMenu={handleContextMenu}
     >
       {!insideTable && (
         <div
@@ -127,9 +209,28 @@ function ParagraphView({ node, editor, getPos, deleteNode }) {
 
 function HeadingView({ node, editor, getPos, deleteNode }) {
   const [hovered, setHovered] = useState(false)
+  const openCtxMenu = useContext(BlockCtxMenuContext)
   const nodeId = node.attrs.nodeId || undefined
   const sourceBlock = node.attrs.sourceBlockIds?.split(',')[0] || undefined
   const Tag = `h${node.attrs.level || 2}`
+
+  const handleContextMenu = (e) => {
+    e.preventDefault()
+    const selEnvelope = buildSelectionEnvelope(editor)
+    const blockJson = tipTapToStructured({ type: 'doc', content: [node.toJSON()] }, {})
+    const blockEnvelope = buildClipboardEnvelope('block', blockJson.nodes[0] ?? node.toJSON())
+    openCtxMenu?.(e.clientX, e.clientY, [
+      { label: '↑ Move up', onClick: () => moveBlock(editor, getPos, 'up') },
+      { label: '↓ Move down', onClick: () => moveBlock(editor, getPos, 'down') },
+      { separator: true },
+      { label: '⎘ Copy block', copyFeedback: true, onClick: () => navigator.clipboard.writeText(JSON.stringify(blockEnvelope, null, 2)) },
+      ...(selEnvelope ? [{ label: 'Copy selected', copyFeedback: true, onClick: () => navigator.clipboard.writeText(JSON.stringify(selEnvelope, null, 2)) }] : []),
+      { separator: true },
+      { label: '→P', onClick: () => { const pos = getPos?.(); if (pos != null) editor.chain().focus(pos + 1).setParagraph().run() } },
+      { separator: true },
+      { label: '✕ Delete', danger: true, onClick: () => deleteNode() },
+    ])
+  }
 
   return (
     <NodeViewWrapper
@@ -140,6 +241,7 @@ function HeadingView({ node, editor, getPos, deleteNode }) {
       data-source-block={sourceBlock}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onContextMenu={handleContextMenu}
     >
       <div
         data-drag-handle
@@ -232,7 +334,11 @@ export default function TipTapEditor({
 
   const [toolbarPos, setToolbarPos] = useState(null)
   const [tableToolbarPos, setTableToolbarPos] = useState(null)
+  const [ctxMenu, setCtxMenu] = useState(null)
   const editorWrapperRef = useRef(null)
+  const editorRef = useRef(null)
+
+  const openCtxMenu = useCallback((x, y, items) => setCtxMenu({ x, y, items }), [])
 
   const editor = useEditor({
     extensions: [
@@ -317,8 +423,23 @@ export default function TipTapEditor({
         class: 'tiptap-doc outline-none',
         spellcheck: 'false',
       },
+      handleKeyDown(_view, event) {
+        if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === 'c') {
+          event.preventDefault()
+          const ed = editorRef.current
+          if (ed) {
+            const envelope = buildSelectionEnvelope(ed)
+            if (envelope) navigator.clipboard.writeText(JSON.stringify(envelope, null, 2))
+          }
+          return true
+        }
+        return false
+      },
     },
   }, [])
+
+  // Keep editorRef current so handleKeyDown (defined once) can access the live editor.
+  useEffect(() => { editorRef.current = editor }, [editor])
 
   // Load content when contentKey changes (external updates: API fetch, patchContent).
   useEffect(() => {
@@ -380,6 +501,8 @@ export default function TipTapEditor({
               editor.chain().focus().insertContent({ type: 'mathInline', attrs: { latex: 'x' } }).run()
               setToolbarPos(null)
             }}><span className="font-mono">∑</span></FmtBtn>
+            <Sep />
+            <CopySelBtn editor={editor} />
           </div>
         </div>
       )}
@@ -411,9 +534,119 @@ export default function TipTapEditor({
         </div>
       )}
 
-      <EditorContent editor={editor} />
+      <BlockCtxMenuContext.Provider value={openCtxMenu}>
+        <EditorContent editor={editor} />
+      </BlockCtxMenuContext.Provider>
     </div>
+
+    {ctxMenu && (
+      <BlockContextMenu
+        x={ctxMenu.x}
+        y={ctxMenu.y}
+        items={ctxMenu.items}
+        onClose={() => setCtxMenu(null)}
+      />
+    )}
     </>
+  )
+}
+
+// ── CopySelBtn ─────────────────────────────────────────────────────────────────
+// "Copy" button in the floating selection toolbar. Copies touched nodes as JSON.
+
+function CopySelBtn({ editor }) {
+  const [copied, setCopied] = useState(false)
+  const handleClick = () => {
+    const envelope = buildSelectionEnvelope(editor)
+    if (!envelope) return
+    navigator.clipboard.writeText(JSON.stringify(envelope, null, 2))
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <button
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={handleClick}
+      title="Copy selection as JSON (⌘⇧C)"
+      className={`px-2 py-0.5 rounded text-sm font-medium transition-colors min-w-6 text-center ${
+        copied ? 'bg-green-500 text-white' : 'text-gray-200 hover:bg-gray-700'
+      }`}
+    >
+      {copied ? '✓' : 'Copy'}
+    </button>
+  )
+}
+
+// ── BlockContextMenu ───────────────────────────────────────────────────────────
+// Right-click context menu that appears at mouse cursor position.
+
+function BlockContextMenu({ x, y, items, onClose }) {
+  const menuRef = useRef(null)
+  const [flashIdx, setFlashIdx] = useState(null)
+  const [pos, setPos] = useState({ top: y, left: x })
+
+  // Flip menu if it would overflow the viewport
+  useEffect(() => {
+    if (!menuRef.current) return
+    const rect = menuRef.current.getBoundingClientRect()
+    setPos({
+      top: rect.bottom > window.innerHeight ? Math.max(0, y - rect.height) : y,
+      left: rect.right > window.innerWidth ? Math.max(0, x - rect.width) : x,
+    })
+  }, [x, y])
+
+  // Close on outside click or Escape
+  useEffect(() => {
+    const onDown = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) onClose()
+    }
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+
+  const handleItem = (item, idx) => {
+    item.onClick()
+    if (item.copyFeedback) {
+      setFlashIdx(idx)
+      setTimeout(() => { setFlashIdx(null); onClose() }, 700)
+    } else {
+      onClose()
+    }
+  }
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed z-[200] bg-white border border-gray-200 rounded-lg shadow-xl py-1 min-w-[160px] select-none"
+      style={{ top: pos.top, left: pos.left }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      {items.map((item, i) =>
+        item.separator ? (
+          <div key={i} className="my-1 h-px bg-gray-100" />
+        ) : (
+          <button
+            key={i}
+            className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
+              item.danger
+                ? 'text-red-500 hover:bg-red-50'
+                : flashIdx === i
+                  ? 'text-green-600 bg-green-50'
+                  : 'text-gray-700 hover:bg-gray-50'
+            }`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleItem(item, i) }}
+          >
+            {flashIdx === i && item.copyFeedback ? 'Copied! ✓' : item.label}
+          </button>
+        )
+      )}
+    </div>
   )
 }
 
