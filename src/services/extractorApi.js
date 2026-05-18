@@ -120,6 +120,28 @@ export async function createDocument(pdfFile, pageCount, folderId = null) {
   return r.json()
 }
 
+export async function createBlankDocument(filename, folderId = null) {
+  const form = new FormData()
+  form.append('filename', filename)
+  form.append('file_type', 'blank')
+  if (folderId) form.append('folder_id', folderId)
+  const r = await fetch(`${BASE}/api/documents/`, { method: 'POST', body: form })
+  if (!r.ok) throw new Error(`createBlankDocument ${r.status}: ${await r.text()}`)
+  return r.json()
+}
+
+export async function addBlankPage(docId) {
+  const r = await fetch(`${BASE}/api/documents/${docId}/pages/add/`, { method: 'POST' })
+  if (!r.ok) throw new Error(`addBlankPage ${r.status}: ${await r.text()}`)
+  return r.json()
+}
+
+export async function deleteBlankPage(docId, pageNo) {
+  const r = await fetch(`${BASE}/api/documents/${docId}/pages/${pageNo}/`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(`deleteBlankPage ${r.status}: ${await r.text()}`)
+  return r.json()
+}
+
 export async function listDocuments(params = {}) {
   const qs = new URLSearchParams(
     Object.entries(params).filter(([, v]) => v != null && v !== '')

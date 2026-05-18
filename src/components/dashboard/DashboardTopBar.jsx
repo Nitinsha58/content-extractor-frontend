@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Search, LayoutGrid, List, Upload, Plus, ScanText, FolderPlus, FileUp, DatabaseZap } from 'lucide-react'
+import { Search, LayoutGrid, List, Upload, Plus, ScanText, FolderPlus, FileUp, DatabaseZap, FilePlus } from 'lucide-react'
 
 const ACCEPTED_TYPES = '.pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.webp'
 
@@ -10,6 +10,7 @@ export default function DashboardTopBar({
   onViewModeChange,
   onUpload,
   onNewFolder,
+  onNewBlank,
   uploading,
   onExportTrainingData,
   annotatedPageCount = 0,
@@ -135,6 +136,13 @@ export default function DashboardTopBar({
                 >
                   <FolderPlus size={14} className="text-yellow-400" />
                   New Folder
+                </button>
+                <button
+                  onClick={() => { setShowNewMenu(false); onNewBlank?.() }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors"
+                >
+                  <FilePlus size={14} className="text-green-400" />
+                  New Blank
                 </button>
                 <label className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer">
                   <FileUp size={14} className="text-blue-400" />

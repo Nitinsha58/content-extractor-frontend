@@ -3,10 +3,32 @@ import { usePageWindow } from './usePageWindow'
 import pdfjsLib from './pdf/pdfConfig'
 import { runLayoutDetection, runTableStructureAnalysis, runTableCellTypeDetection, runOcr, runOcrStream, exportDocument, createDocument, updateDocument, savePageContent, getPage, getDocument } from './services/DocumentRepository'
 import { computeReadingOrder } from './utils/readingOrder'
+import { addBlankPage, deleteBlankPage } from './services/extractorApi'
 import TopBar from './components/TopBar'
 import PagesPanel from './components/PagesPanel'
 import CanvasPane from './components/CanvasPane'
 import DocumentEditor from './components/DocumentEditor'
+
+const A4_W = 2480
+const A4_H = 3508
+
+async function compositeBlankPage(placedImages) {
+  const canvas = document.createElement('canvas')
+  canvas.width = A4_W
+  canvas.height = A4_H
+  const ctx = canvas.getContext('2d')
+  ctx.fillStyle = 'white'
+  ctx.fillRect(0, 0, A4_W, A4_H)
+  for (const img of placedImages) {
+    await new Promise((resolve, reject) => {
+      const el = new window.Image()
+      el.onload = () => { ctx.drawImage(el, img.x, img.y, img.width, img.height); resolve() }
+      el.onerror = reject
+      el.src = img.dataUrl
+    })
+  }
+  return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9))
+}
 
 const INITIAL_BATCH = 8    // pages shown before background PDF loading begins
 const DETECTION_WINDOW = 6 // pages ahead of active page to keep auto-detected
@@ -125,6 +147,9 @@ function makePage(i, pdfPage, thumbnail, hintW = 0, hintH = 0) {
 export default function App({ docId, freshUpload = false, initialPdfFile = null, onNavigateToDashboard }) {
   const [pdfFile, setPdfFile] = useState(null)
   const [pdfDoc, setPdfDoc] = useState(null)
+  const [fileType, setFileType] = useState(null)   // 'pdf'|'image'|'other'|'blank'
+  const [docFilename, setDocFilename] = useState(null)  // for blank docs (no pdfFile)
+  const canvasMouseRef = useRef(null)  // { pageIdx, x, y } in canvas space — updated by CanvasPane
   const [activePage, setActivePage] = useState(0)
   const [splitRatio, setSplitRatio] = useState(0.5) // fraction of width given to CanvasPane in split mode
   const splitContainerRef = useRef(null)
@@ -463,6 +488,7 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
     autoDetectInitiatedRef.current = false
 
     const gen = ++loadGenRef.current
+    setDocFilename(file.name)
     setPdfFile(file)
 
     // Create a persistent document record if this is a fresh user-selected file.
@@ -698,6 +724,37 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
     if (!docId || freshUpload) return
     getDocument(docId)
       .then(async (doc) => {
+        // ── Blank document path ──────────────────────────────────────────────
+        if (doc.file_type === 'blank') {
+          documentIdRef.current = docId
+          setFileType('blank')
+          setDocFilename(doc.filename)
+          const initialPages = (doc.pages || []).map(p => ({
+            pageNo: p.page_number,
+            pdfPage: null,
+            imageBlob: null,
+            imageUrl: null,
+            imageW: A4_W,
+            imageH: A4_H,
+            status: p.status || 'idle',
+            sessionId: p.session_id || null,
+            layoutBlocks: p.layout_blocks || [],
+            ocrBlocks: p.ocr_blocks || [],
+            placedImages: p.placed_images || [],
+          }))
+          setPages(initialPages.length ? initialPages : [{
+            pageNo: 1, pdfPage: null, imageBlob: null, imageUrl: null,
+            imageW: A4_W, imageH: A4_H, status: 'idle', sessionId: null,
+            layoutBlocks: [], ocrBlocks: [], placedImages: [],
+          }])
+          pagesRef.current = initialPages
+          setPdfDoc(null)
+          setPdfLoadProgress({ loaded: 1, total: 1, allReady: true })
+          return
+        }
+
+        // ── Normal file path ─────────────────────────────────────────────────
+        setDocFilename(doc.filename)
         const savedPageMap = {}
         for (const p of doc.pages) savedPageMap[p.page_number] = p
         const resp = await fetch(doc.pdf_url)
@@ -717,10 +774,117 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Blank document: add page ───────────────────────────────────────────────
+  const handleAddBlankPage = useCallback(async () => {
+    if (!documentIdRef.current) return
+    try {
+      const result = await addBlankPage(documentIdRef.current)
+      const newPage = {
+        pageNo: result.page_number,
+        pdfPage: null, imageBlob: null, imageUrl: null,
+        imageW: A4_W, imageH: A4_H,
+        status: 'idle', sessionId: null,
+        layoutBlocks: [], ocrBlocks: [], placedImages: [],
+      }
+      setPages(prev => [...prev, newPage])
+    } catch (err) {
+      alert(`Failed to add page: ${err.message}`)
+    }
+  }, [])
+
+  // ── Rename document ───────────────────────────────────────────────────────
+  const handleRenameFile = useCallback(async (newName) => {
+    setDocFilename(newName)
+    if (documentIdRef.current) {
+      updateDocument(documentIdRef.current, { filename: newName })
+        .catch(e => console.warn('rename failed:', e.message))
+    }
+  }, [])
+
+  // ── Blank document: delete page ──────────────────────────────────────────
+  const handleDeletePage = useCallback(async (pageIdx) => {
+    if (pages.length <= 1) return
+    const page = pages[pageIdx]
+    if (!page || !documentIdRef.current) return
+    const ok = window.confirm(`Delete page ${page.pageNo}? This cannot be undone.`)
+    if (!ok) return
+    try {
+      await deleteBlankPage(documentIdRef.current, page.pageNo)
+      setPages(prev => {
+        const updated = prev.filter((_, i) => i !== pageIdx)
+        // Re-number pages in state to match backend renumbering
+        return updated.map((p, i) => ({ ...p, pageNo: i + 1 }))
+      })
+      setActivePage(prev => Math.min(prev, pages.length - 2))
+    } catch (err) {
+      alert(`Failed to delete page: ${err.message}`)
+    }
+  }, [pages])
+
+  // ── Blank document: clipboard image paste ────────────────────────────────
+  useEffect(() => {
+    if (fileType !== 'blank') return
+    const handlePaste = async (e) => {
+      const items = Array.from(e.clipboardData?.items || [])
+      const imgItem = items.find(i => i.type.startsWith('image/'))
+      if (!imgItem) return
+      e.preventDefault()
+      const blob = imgItem.getAsFile()
+      if (!blob) return
+      const dataUrl = await new Promise(resolve => {
+        const reader = new FileReader()
+        reader.onload = ev => resolve(ev.target.result)
+        reader.readAsDataURL(blob)
+      })
+      const dims = await new Promise((resolve, reject) => {
+        const img = new window.Image()
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+        img.onerror = reject
+        img.src = dataUrl
+      })
+      const maxW = Math.min(dims.w, 1200)
+      const scale = maxW / dims.w
+      const imgW = Math.round(dims.w * scale)
+      const imgH = Math.round(dims.h * scale)
+
+      // Use tracked canvas mouse position if available, else center
+      const mouse = canvasMouseRef.current
+      const x = (mouse?.pageIdx === activePage)
+        ? Math.max(0, Math.min(A4_W - imgW, mouse.x - imgW / 2))
+        : Math.max(0, (A4_W - imgW) / 2)
+      const y = (mouse?.pageIdx === activePage)
+        ? Math.max(0, Math.min(A4_H - imgH, mouse.y - imgH / 2))
+        : 100
+
+      const placedImg = { id: crypto.randomUUID(), dataUrl, x, y, width: imgW, height: imgH }
+
+      setPages(prev => {
+        const u = [...prev]
+        if (u[activePage]) {
+          u[activePage] = {
+            ...u[activePage],
+            placedImages: [...(u[activePage].placedImages || []), placedImg],
+          }
+        }
+        return u
+      })
+
+      if (documentIdRef.current) {
+        const currentPage = pagesRef.current[activePage]
+        savePageContent(documentIdRef.current, currentPage.pageNo, {
+          placed_images: [...(currentPage.placedImages || []), placedImg],
+        }).catch(e => console.warn('placed_images save failed:', e.message))
+      }
+    }
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [fileType, activePage])
+
   // ── Manual detect (single page, takes priority, sets isProcessing) ─────────
   const handleRecognize = useCallback(async () => {
     const page = pages[activePage]
-    if (!page?.pdfPage && !page?.imageBlob) return
+    const hasContent = page?.pdfPage || page?.imageBlob || page?.placedImages?.length > 0
+    if (!hasContent) return
 
     if (page.layoutBlocks?.length > 0) {
       const ok = window.confirm(
@@ -740,6 +904,8 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
         canvas.height = viewport.height
         await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
         imageBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+      } else if (page.placedImages?.length > 0) {
+        imageBlob = await compositeBlankPage(page.placedImages)
       } else {
         imageBlob = page.imageBlob
       }
@@ -1179,7 +1345,9 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       <TopBar
-        filename={pdfFile?.name}
+        filename={docFilename || pdfFile?.name}
+        onRenameFile={handleRenameFile}
+        fileType={fileType}
         pagesDone={pages.filter(p => p.status === 'ocr-complete').length}
         totalPages={pages.length}
         onFileChange={(e) => {
@@ -1222,6 +1390,9 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
                 : null
           }
           onPreloadPages={loadPagesInRange}
+          isBlankDoc={fileType === 'blank'}
+          onDeletePage={fileType === 'blank' ? handleDeletePage : undefined}
+          onAddPage={fileType === 'blank' ? handleAddBlankPage : undefined}
         />
 
         {activePage_data && (
@@ -1246,6 +1417,21 @@ export default function App({ docId, freshUpload = false, initialPdfFile = null,
                 finalizingBlockIds={finalizingBlockIds}
                 onFinalizeBlock={handleFinalizeBlock}
                 onCellSelect={setSelectedCell}
+                isBlankDoc={fileType === 'blank'}
+                canvasMouseRef={canvasMouseRef}
+                onPlacedImagesChange={(pageIdx, newImages) => {
+                  setPages(prev => {
+                    const u = [...prev]
+                    if (u[pageIdx]) u[pageIdx] = { ...u[pageIdx], placedImages: newImages }
+                    return u
+                  })
+                  const page = pagesRef.current[pageIdx]
+                  if (page && documentIdRef.current) {
+                    savePageContent(documentIdRef.current, page.pageNo, {
+                      placed_images: newImages,
+                    }).catch(e => console.warn('placed_images save failed:', e.message))
+                  }
+                }}
               />
             </div>
 

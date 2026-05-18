@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { listDocuments, createDocument, deleteDocument } from '../services/extractorApi'
+import { listDocuments, createDocument, createBlankDocument, deleteDocument } from '../services/extractorApi'
 import {
   listFolders, createFolder, renameFolder, deleteFolder,
   listTags, createTag, deleteTag,
@@ -69,6 +69,8 @@ export default function Dashboard() {
   const [uploading, setUploading] = useState(false)
   const [exportingTrainingData, setExportingTrainingData] = useState(false)
   const [error, setError] = useState(null)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const dragCounterRef = useRef(0)
 
   // Layout state
   const [view, setView] = useState('all')
@@ -151,6 +153,61 @@ export default function Dashboard() {
       }
     }
   }, [navigate, loadDocuments, currentFolderId])
+
+  // ── Drag-and-drop upload ───────────────────────────────────────────────────
+
+  const ACCEPTED_EXTS = useMemo(() => new Set([
+    'application/pdf', 'image/jpeg', 'image/png', 'image/tiff',
+    'image/bmp', 'image/webp', 'image/gif',
+  ]), [])
+
+  const handleDragEnter = useCallback((e) => {
+    e.preventDefault()
+    dragCounterRef.current++
+    setIsDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault()
+    if (--dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0
+      setIsDragOver(false)
+    }
+  }, [])
+
+  const handleDragOver = useCallback((e) => { e.preventDefault() }, [])
+
+  const handleDrop = useCallback(async (e) => {
+    e.preventDefault()
+    dragCounterRef.current = 0
+    setIsDragOver(false)
+    const files = Array.from(e.dataTransfer.files).filter(
+      f => ACCEPTED_EXTS.has(f.type) || f.name.match(/\.(pdf|jpe?g|png|tiff?|bmp|webp)$/i)
+    )
+    if (!files.length) return
+    setUploading(true)
+    try {
+      const docs = await Promise.all(files.map(f => createDocument(f, 0, currentFolderId)))
+      docs.forEach(doc => window.open(`/document/${doc.id}`, '_blank'))
+      await loadDocuments()
+    } catch (err) {
+      alert(`Upload failed: ${err.message}`)
+    } finally {
+      setUploading(false)
+    }
+  }, [ACCEPTED_EXTS, currentFolderId, loadDocuments])
+
+  // ── Create blank document ──────────────────────────────────────────────────
+
+  const handleCreateBlank = useCallback(async () => {
+    try {
+      const doc = await createBlankDocument('Untitled', currentFolderId)
+      window.open(`/document/${doc.id}`, '_blank')
+      await loadDocuments()
+    } catch (err) {
+      alert(`Failed to create blank document: ${err.message}`)
+    }
+  }, [currentFolderId, loadDocuments])
 
   // ── Document actions ───────────────────────────────────────────────────────
 
@@ -295,7 +352,24 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
+    <div
+      className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden relative"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {/* Drag-and-drop overlay */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-blue-950/80 border-4 border-dashed border-blue-400 pointer-events-none">
+          <div className="flex flex-col items-center gap-3 text-blue-200">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12M8 8l4-4 4 4" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            <span className="text-lg font-semibold">Drop to open in new tab</span>
+          </div>
+        </div>
+      )}
       <DashboardTopBar
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -303,6 +377,7 @@ export default function Dashboard() {
         onViewModeChange={setViewMode}
         onUpload={handleUpload}
         onNewFolder={() => openNewFolderModal(currentFolderId)}
+        onNewBlank={handleCreateBlank}
         uploading={uploading}
         onExportTrainingData={handleExportTrainingData}
         annotatedPageCount={annotatedPageCount}

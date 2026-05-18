@@ -3,6 +3,7 @@ import {
   MousePointer2, Type, Heading2, Sigma, Table2, Image,
   ChevronLeft, ChevronRight,
   Clock, LayoutTemplate, CheckCircle2, AlertTriangle,
+  Trash2, PlusSquare,
 } from 'lucide-react'
 
 const TOOLS = [
@@ -46,6 +47,9 @@ export default function PagesPanel({
   setActiveTool,
   selectedBlockLabel,
   onPreloadPages,
+  isBlankDoc = false,
+  onDeletePage,
+  onAddPage,
 }) {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem('pages-panel-collapsed') === 'true'
@@ -92,6 +96,15 @@ export default function PagesPanel({
           <ChevronRight size={16} />
         </button>
         <div className="w-6 h-px bg-gray-200" />
+        {isBlankDoc && onAddPage && (
+          <button
+            onClick={onAddPage}
+            title="Add Page"
+            className="w-7 h-7 flex items-center justify-center rounded hover:bg-green-100 text-green-600"
+          >
+            <PlusSquare size={16} />
+          </button>
+        )}
         {/* Tool icons — compact */}
         {TOOLS.map((tool) => {
           const isActive = effectiveActiveTool === tool.id
@@ -137,7 +150,7 @@ export default function PagesPanel({
             key={i}
             ref={i === activePage ? activeItemRef : null}
             onClick={() => onSelectPage(i)}
-            className={`flex items-center gap-2 p-2 cursor-pointer border-b transition-colors ${
+            className={`group flex items-center gap-2 p-2 cursor-pointer border-b transition-colors ${
               activePage === i
                 ? 'bg-blue-50 border-l-4 border-l-blue-500'
                 : 'hover:bg-gray-50'
@@ -152,15 +165,41 @@ export default function PagesPanel({
                 className="w-12 h-16 object-contain border border-gray-200 shrink-0"
               />
             ) : (
-              <div className="w-12 h-16 bg-gray-100 border border-gray-200 shrink-0" />
+              <div className="w-12 h-16 bg-gray-100 border border-gray-200 shrink-0 flex items-center justify-center">
+                {isBlankDoc && <span className="text-xs text-gray-300">A4</span>}
+              </div>
             )}
 
-            <span className="shrink-0 flex items-center">
-              <PageStatusIcon status={p.status} />
-            </span>
+            <div className="flex flex-col items-center gap-1 ml-auto shrink-0">
+              <span className="flex items-center">
+                <PageStatusIcon status={p.status} />
+              </span>
+              {isBlankDoc && pages.length > 1 && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onDeletePage?.(i) }}
+                  title="Delete page"
+                  className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-red-100 text-gray-300 hover:text-red-500"
+                >
+                  <Trash2 size={11} />
+                </button>
+              )}
+            </div>
           </div>
         ))}
       </div>
+
+      {/* Add Page — blank docs only */}
+      {isBlankDoc && onAddPage && (
+        <div className="px-2 py-1.5 border-b border-gray-200">
+          <button
+            onClick={onAddPage}
+            className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium text-green-700 bg-green-50 rounded-md hover:bg-green-100 transition-colors"
+          >
+            <PlusSquare size={12} />
+            Add Page
+          </button>
+        </div>
+      )}
 
       {/* Tools */}
       <div className="border-t border-gray-200 p-2">

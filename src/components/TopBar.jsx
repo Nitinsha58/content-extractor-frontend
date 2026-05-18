@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, FolderOpen, Scan, RotateCcw, Undo2, Redo2, ChevronDown, Layers, Columns2, FileText } from 'lucide-react'
+import { ArrowLeft, FolderOpen, Scan, RotateCcw, Undo2, Redo2, ChevronDown, Layers, Columns2, FileText, Pencil } from 'lucide-react'
 
 function Dropdown({ open, onClose, children, align = 'left' }) {
   const ref = useRef(null)
@@ -42,6 +42,7 @@ const VIEW_MODES = [
 
 export default function TopBar({
   filename,
+  fileType,
   pagesDone,
   totalPages,
   onFileChange,
@@ -61,14 +62,33 @@ export default function TopBar({
   pdfLoadProgress,
   detectingCount = 0,
   onNavigateToDashboard,
+  onRenameFile,
 }) {
   const [layoutOpen, setLayoutOpen]   = useState(false)
   const [ocrOpen,    setOcrOpen]      = useState(false)
   const [exportOpen, setExportOpen]   = useState(false)
+  const [editingName, setEditingName] = useState(false)
+  const [nameInput,   setNameInput]   = useState('')
+  const nameInputRef = useRef(null)
 
   const layoutRef = useRef(null)
   const ocrRef    = useRef(null)
   const exportRef = useRef(null)
+
+  const startEditName = () => {
+    if (!onRenameFile) return
+    setNameInput(filename || '')
+    setEditingName(true)
+    setTimeout(() => { nameInputRef.current?.select() }, 0)
+  }
+
+  const commitEditName = () => {
+    const trimmed = nameInput.trim()
+    if (trimmed && trimmed !== filename) onRenameFile(trimmed)
+    setEditingName(false)
+  }
+
+  const cancelEditName = () => setEditingName(false)
 
   const close = (setter) => () => setter(false)
   const toggle = (setter, others) => () => {
@@ -210,7 +230,37 @@ export default function TopBar({
           {/* Status */}
           <div className="flex items-center gap-1.5 text-xs">
             {filename && (
-              <span className="text-gray-500 truncate max-w-32" title={filename}>{filename}</span>
+              editingName ? (
+                <input
+                  ref={nameInputRef}
+                  value={nameInput}
+                  onChange={e => setNameInput(e.target.value)}
+                  onBlur={commitEditName}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') { e.preventDefault(); commitEditName() }
+                    if (e.key === 'Escape') { e.preventDefault(); cancelEditName() }
+                  }}
+                  className="text-xs text-gray-700 bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none max-w-48"
+                  style={{ minWidth: 60 }}
+                />
+              ) : (
+                <span
+                  className={`text-gray-500 truncate max-w-40 ${onRenameFile ? 'cursor-pointer hover:text-gray-800' : ''}`}
+                  title={onRenameFile ? `${filename} — click to rename` : filename}
+                  onClick={onRenameFile ? startEditName : undefined}
+                >
+                  {filename}
+                </span>
+              )
+            )}
+            {filename && onRenameFile && !editingName && (
+              <button
+                onClick={startEditName}
+                className="text-gray-300 hover:text-gray-500 transition-colors shrink-0"
+                title="Rename"
+              >
+                <Pencil size={11} />
+              </button>
             )}
             {isLoading ? (
               <span className="text-blue-500 flex items-center gap-1 shrink-0">
@@ -271,6 +321,7 @@ export default function TopBar({
           <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${loadPct}%` }} />
         </div>
       )}
+
     </div>
   )
 }

@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { sessionImageUrl } from '../services/DocumentRepository'
 import BlockOverlay from './BlockOverlay'
-import { AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, ChevronRight, Image as ImageIcon } from 'lucide-react'
+
+const A4_W = 2480
+const A4_H = 3508
 
 const DEFAULT_SCALE = 1.5
 const NEAR_VIEWPORT_MARGIN = '600px'
@@ -248,6 +251,241 @@ function PdfPageView({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BlankPageView — A4 canvas with draggable/scalable placed images
+// ─────────────────────────────────────────────────────────────────────────────
+function BlankPageView({
+  page, pageIdx, zoom, isActive, registerPageEl, canvasMouseRef, onPlacedImagesChange,
+  viewMode, selectedBlockId, activeTool,
+  onSelectBlock, onSelectBlocks, onBlocksChange,
+  tatrRunningBlockIds, finalizingBlockIds, onFinalizeBlock, onCellSelect,
+}) {
+  const wrapperRef = useRef(null)
+  const [selectedImgId, setSelectedImgId] = useState(null)
+
+  useEffect(() => {
+    if (wrapperRef.current && registerPageEl) {
+      registerPageEl(pageIdx, wrapperRef.current)
+    }
+    return () => { if (registerPageEl) registerPageEl(pageIdx, null) }
+  }, [pageIdx, registerPageEl])
+
+  const displayW = A4_W * zoom * 0.25   // render at 1/4 scale (620px wide at zoom=1)
+  const displayH = A4_H * zoom * 0.25
+
+  // Track mouse position in A4 canvas coords
+  const handleMouseMove = useCallback((e) => {
+    if (!wrapperRef.current || !canvasMouseRef) return
+    const rect = wrapperRef.current.getBoundingClientRect()
+    const relX = (e.clientX - rect.left) / rect.width
+    const relY = (e.clientY - rect.top) / rect.height
+    canvasMouseRef.current = { pageIdx, x: Math.round(relX * A4_W), y: Math.round(relY * A4_H) }
+  }, [pageIdx, canvasMouseRef])
+
+  const handleMouseLeave = useCallback(() => {
+    if (canvasMouseRef && canvasMouseRef.current?.pageIdx === pageIdx) {
+      canvasMouseRef.current = null
+    }
+  }, [pageIdx, canvasMouseRef])
+
+  // Drag an image: track pointer on the wrapper to avoid losing events
+  const dragStateRef = useRef(null)
+
+  const startDrag = useCallback((e, imgId) => {
+    e.stopPropagation()
+    e.preventDefault()
+    setSelectedImgId(imgId)
+    const img = (page.placedImages || []).find(i => i.id === imgId)
+    if (!img || !wrapperRef.current) return
+    const rect = wrapperRef.current.getBoundingClientRect()
+    const scaleX = A4_W / rect.width
+    const scaleY = A4_H / rect.height
+    dragStateRef.current = {
+      imgId,
+      startMouseX: e.clientX,
+      startMouseY: e.clientY,
+      startImgX: img.x,
+      startImgY: img.y,
+      scaleX,
+      scaleY,
+    }
+    const onMove = (me) => {
+      const ds = dragStateRef.current
+      if (!ds) return
+      const dx = (me.clientX - ds.startMouseX) * ds.scaleX
+      const dy = (me.clientY - ds.startMouseY) * ds.scaleY
+      const newX = Math.round(ds.startImgX + dx)
+      const newY = Math.round(ds.startImgY + dy)
+      const updated = (page.placedImages || []).map(i =>
+        i.id === ds.imgId ? { ...i, x: newX, y: newY } : i
+      )
+      onPlacedImagesChange?.(pageIdx, updated)
+    }
+    const onUp = () => {
+      dragStateRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [page.placedImages, pageIdx, onPlacedImagesChange])
+
+  // Resize an image from its corner handle
+  const startResize = useCallback((e, imgId, corner) => {
+    e.stopPropagation()
+    e.preventDefault()
+    const img = (page.placedImages || []).find(i => i.id === imgId)
+    if (!img || !wrapperRef.current) return
+    const rect = wrapperRef.current.getBoundingClientRect()
+    const scaleX = A4_W / rect.width
+    const scaleY = A4_H / rect.height
+    const startMouseX = e.clientX
+    const startMouseY = e.clientY
+    const { x: ox, y: oy, width: ow, height: oh } = img
+    const onMove = (me) => {
+      const dx = (me.clientX - startMouseX) * scaleX
+      const dy = (me.clientY - startMouseY) * scaleY
+      let nx = ox, ny = oy, nw = ow, nh = oh
+      if (corner === 'se') { nw = Math.max(40, ow + dx); nh = Math.round(nw / (ow / oh)) }
+      if (corner === 'sw') { nw = Math.max(40, ow - dx); nx = ox + ow - nw; nh = Math.round(nw / (ow / oh)) }
+      if (corner === 'ne') { nw = Math.max(40, ow + dx); nh = Math.round(nw / (ow / oh)); ny = oy + oh - nh }
+      if (corner === 'nw') { nw = Math.max(40, ow - dx); nx = ox + ow - nw; nh = Math.round(nw / (ow / oh)); ny = oy + oh - nh }
+      const updated = (page.placedImages || []).map(i =>
+        i.id === imgId ? { ...i, x: Math.round(nx), y: Math.round(ny), width: Math.round(nw), height: Math.round(nh) } : i
+      )
+      onPlacedImagesChange?.(pageIdx, updated)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [page.placedImages, pageIdx, onPlacedImagesChange])
+
+  const deleteSelected = useCallback((e) => {
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedImgId) {
+      const updated = (page.placedImages || []).filter(i => i.id !== selectedImgId)
+      onPlacedImagesChange?.(pageIdx, updated)
+      setSelectedImgId(null)
+    }
+  }, [selectedImgId, page.placedImages, pageIdx, onPlacedImagesChange])
+
+  useEffect(() => {
+    window.addEventListener('keydown', deleteSelected)
+    return () => window.removeEventListener('keydown', deleteSelected)
+  }, [deleteSelected])
+
+  const HANDLE_PX = 8
+  const handleStyle = (top, left, cursor) => ({
+    position: 'absolute', width: HANDLE_PX, height: HANDLE_PX,
+    background: '#3b82f6', border: '1px solid white', borderRadius: 2,
+    top, left, cursor, transform: 'translate(-50%,-50%)', zIndex: 10,
+  })
+
+  const scaleX = displayW / A4_W
+  const scaleY = displayH / A4_H
+
+  return (
+    <div
+      ref={wrapperRef}
+      data-page-idx={pageIdx}
+      style={{
+        width: displayW, height: displayH, position: 'relative', flexShrink: 0,
+        background: 'white',
+        boxShadow: isActive
+          ? '0 0 0 2px #3b82f6, 0 4px 16px rgba(0,0,0,0.18)'
+          : '0 2px 8px rgba(0,0,0,0.1)',
+        marginBottom: 24, transition: 'box-shadow 0.15s', cursor: 'default',
+      }}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      onClick={() => setSelectedImgId(null)}
+    >
+      <div style={{
+        position: 'absolute', top: -20, left: 0,
+        fontSize: 11, userSelect: 'none',
+        color: isActive ? '#3b82f6' : '#9ca3af',
+        fontWeight: isActive ? 600 : 400,
+      }}>
+        Page {page.pageNo}
+      </div>
+
+      {/* Placed images */}
+      {(page.placedImages || []).map(img => {
+        const isSel = img.id === selectedImgId
+        const px = img.x * scaleX
+        const py = img.y * scaleY
+        const pw = img.width * scaleX
+        const ph = img.height * scaleY
+        return (
+          <div
+            key={img.id}
+            style={{
+              position: 'absolute', left: px, top: py, width: pw, height: ph,
+              cursor: 'move', userSelect: 'none',
+              outline: isSel ? '2px solid #3b82f6' : '1px dashed #94a3b8',
+              boxSizing: 'border-box',
+            }}
+            onMouseDown={(e) => startDrag(e, img.id)}
+            onClick={(e) => { e.stopPropagation(); setSelectedImgId(img.id) }}
+          >
+            <img
+              src={img.dataUrl}
+              alt=""
+              style={{ width: '100%', height: '100%', objectFit: 'fill', display: 'block', pointerEvents: 'none' }}
+              draggable={false}
+            />
+            {isSel && (
+              <>
+                <div style={handleStyle(0, 0, 'nw-resize')} onMouseDown={(e) => startResize(e, img.id, 'nw')} />
+                <div style={handleStyle(0, '100%', 'ne-resize')} onMouseDown={(e) => startResize(e, img.id, 'ne')} />
+                <div style={handleStyle('100%', 0, 'sw-resize')} onMouseDown={(e) => startResize(e, img.id, 'sw')} />
+                <div style={handleStyle('100%', '100%', 'se-resize')} onMouseDown={(e) => startResize(e, img.id, 'se')} />
+              </>
+            )}
+          </div>
+        )
+      })}
+
+      {/* Layout block overlay — shown after Detect Layout runs */}
+      {viewMode !== 'original' && (page.layoutBlocks?.length > 0) && (
+        <BlockOverlay
+          layoutBlocks={page.layoutBlocks}
+          ocrBlocks={page.ocrBlocks}
+          selectedBlockId={selectedBlockId}
+          activeTool={activeTool}
+          zoom={zoom}
+          imageW={displayW}
+          imageH={displayH}
+          blockScale={displayW / (page.imageW || A4_W)}
+          bboxW={page.imageW || A4_W}
+          bboxH={page.imageH || A4_H}
+          onSelectBlock={onSelectBlock}
+          onSelectBlocks={onSelectBlocks}
+          onBlocksChange={(newBlocks, opts) => onBlocksChange?.(pageIdx, newBlocks, opts)}
+          tatrRunningBlockIds={tatrRunningBlockIds}
+          finalizingBlockIds={finalizingBlockIds}
+          onFinalizeBlock={onFinalizeBlock}
+          onCellSelect={onCellSelect}
+        />
+      )}
+
+      {/* Empty state hint */}
+      {(!page.placedImages || page.placedImages.length === 0) && (!page.layoutBlocks?.length) && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: 8,
+          color: '#94a3b8', pointerEvents: 'none',
+        }}>
+          <ImageIcon size={32} strokeWidth={1} />
+          <span style={{ fontSize: 12 }}>Paste image (⌘V) to add content</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CanvasPane — scrollable container of all pages + status bar
 // ─────────────────────────────────────────────────────────────────────────────
 export default function CanvasPane({
@@ -265,6 +503,9 @@ export default function CanvasPane({
   finalizingBlockIds,
   onFinalizeBlock,
   onCellSelect,
+  isBlankDoc = false,
+  canvasMouseRef,
+  onPlacedImagesChange,
 }) {
   const scrollRef = useRef(null)
   const pageElsRef = useRef(new Map())
@@ -418,6 +659,11 @@ export default function CanvasPane({
               <div className="text-lg font-semibold mb-1">Loading PDF…</div>
               <div className="text-sm">{pdfLoadProgress.loaded} / {pdfLoadProgress.total} pages</div>
             </>
+          ) : isBlankDoc ? (
+            <>
+              <p className="text-lg font-semibold">Blank document</p>
+              <p className="text-sm">Paste a screenshot (⌘V) to add content</p>
+            </>
           ) : (
             <>
               <p className="text-lg font-semibold">No document loaded</p>
@@ -452,24 +698,45 @@ export default function CanvasPane({
           minWidth: 'max-content',
         }}>
           {pages.map((page, idx) => (
-            <PdfPageView
-              key={idx}
-              page={page}
-              pageIdx={idx}
-              zoom={zoom}
-              viewMode={viewMode}
-              selectedBlockId={selectedBlockId}
-              activeTool={activeTool}
-              isActive={idx === activePage}
-              onSelectBlock={onSelectBlock}
-              onSelectBlocks={onSelectBlocks}
-              onBlocksChange={onBlocksChange}
-              registerPageEl={registerPageEl}
-              tatrRunningBlockIds={tatrRunningBlockIds}
-              finalizingBlockIds={finalizingBlockIds}
-              onFinalizeBlock={onFinalizeBlock}
-              onCellSelect={onCellSelect}
-            />
+            isBlankDoc
+              ? <BlankPageView
+                  key={idx}
+                  page={page}
+                  pageIdx={idx}
+                  zoom={zoom}
+                  isActive={idx === activePage}
+                  registerPageEl={registerPageEl}
+                  canvasMouseRef={canvasMouseRef}
+                  onPlacedImagesChange={onPlacedImagesChange}
+                  viewMode={viewMode}
+                  selectedBlockId={selectedBlockId}
+                  activeTool={activeTool}
+                  onSelectBlock={onSelectBlock}
+                  onSelectBlocks={onSelectBlocks}
+                  onBlocksChange={onBlocksChange}
+                  tatrRunningBlockIds={tatrRunningBlockIds}
+                  finalizingBlockIds={finalizingBlockIds}
+                  onFinalizeBlock={onFinalizeBlock}
+                  onCellSelect={onCellSelect}
+                />
+              : <PdfPageView
+                  key={idx}
+                  page={page}
+                  pageIdx={idx}
+                  zoom={zoom}
+                  viewMode={viewMode}
+                  selectedBlockId={selectedBlockId}
+                  activeTool={activeTool}
+                  isActive={idx === activePage}
+                  onSelectBlock={onSelectBlock}
+                  onSelectBlocks={onSelectBlocks}
+                  onBlocksChange={onBlocksChange}
+                  registerPageEl={registerPageEl}
+                  tatrRunningBlockIds={tatrRunningBlockIds}
+                  finalizingBlockIds={finalizingBlockIds}
+                  onFinalizeBlock={onFinalizeBlock}
+                  onCellSelect={onCellSelect}
+                />
           ))}
 
           {/* Skeleton placeholders for pages still loading in background */}
