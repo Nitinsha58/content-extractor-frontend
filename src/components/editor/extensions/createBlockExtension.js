@@ -20,6 +20,7 @@ export function createBlockExtension({
     name,
     group: 'block',
     atom: true,
+    draggable: true,
 
     addAttributes() {
       return {

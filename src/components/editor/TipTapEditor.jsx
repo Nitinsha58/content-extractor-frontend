@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useEditor, EditorContent, NodeViewWrapper, NodeViewContent } from '@tiptap/react'
 import { BlockAnnotation } from './LayoutBlocksContext.jsx'
 import StarterKit from '@tiptap/starter-kit'
@@ -14,9 +14,7 @@ import { guardedNodeView } from './extensions/utils'
 import BlockMenu, { moveBlock } from './BlockMenu'
 import { structuredToTipTap, tipTapToStructured } from './converters'
 import { buildClipboardEnvelope } from '../../utils/clipboard'
-
-// Context that lets node views open the block context menu at a viewport position.
-const BlockCtxMenuContext = createContext(null)
+import { BlockCtxMenuContext } from './BlockCtxMenuContext'
 
 // Build a clipboard envelope for the current text selection.
 // For a partial selection within one block, copies only the selected portion.
